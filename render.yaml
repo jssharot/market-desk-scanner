@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: market-desk-paper-scanner
+    runtime: node
+    plan: starter
+    region: virginia
+    buildCommand: node --test scanner/engine.test.mjs
+    startCommand: node scanner/service.mjs
+    healthCheckPath: /health
+    maxShutdownDelaySeconds: 120
+    numInstances: 1
+    disk:
+      name: paper-journal
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_VERSION
+        value: 22.16.0
+      - key: SCANNER_DATA_DIR
+        value: /var/data/scanner
+      - key: SCANNER_SHARED_SECRET
+        generateValue: true
+      - key: ALPACA_API_KEY
+        sync: false
+      - key: ALPACA_SECRET_KEY
+        sync: false
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_JWK
+        sync: false
