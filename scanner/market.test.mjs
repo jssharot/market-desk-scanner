@@ -23,7 +23,7 @@ test('options chain retains missing quotes as null and contracts are strike-sort
 test('news preserves source and detail while following pagination and symbol filters',async()=>{
  const seen=[];const m=setup(async(p,a)=>{seen.push([p,a]);return {news:[{id:123,headline:'Headline',source:'Benzinga',summary:'Short',content:'<p>Long</p>',created_at:'2026-10-12T15:00Z'}],next_page_token:'n2'}});
  const list=await m.handle({method:'GET',url:'/news?symbols=SPY&page_token=n1'});assert.equal(list.nextPageToken,'n2');assert.equal(list.articles[0].source,'Benzinga');assert.equal(seen[0][1].symbols,'SPY');assert.equal(seen[0][1].page_token,'n1');assert.equal(list.articles[0].content,undefined);
- const article=await m.handle({method:'GET',url:'/news?id=123'});assert.equal(article.content,'<p>Long</p>');assert.equal(seen[1][0],'/v1beta1/news/123');
+ const article=await m.handle({method:'GET',url:'/news?id=123'});assert.equal(article.content,'<p>Long</p>');assert.equal(seen.length,1);assert.equal(seen[0][1].include_content,'true');
 });
 test('tracking ignores closed positions and uses fresh bid for liquidation estimates',async()=>{
  const store={},qtime=new Date().toISOString();const m=createMarket({store,save:async()=>{},pushEnv:{},api:async()=>[],data:async p=>p.includes('news')?{news:[]}:p.includes('stocks')?{SPY:{latestTrade:{p:650,t:qtime},prevDailyBar:{c:640}}}:{quotes:{SPY261016C00650000:{bp:2,ap:2.1,bs:1,as:1,t:qtime}}}});
