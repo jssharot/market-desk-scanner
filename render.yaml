@@ -7,7 +7,6 @@ services:
     buildCommand: node --test scanner/engine.test.mjs
     startCommand: node scanner/service.mjs
     healthCheckPath: /health
-    maxShutdownDelaySeconds: 120
     numInstances: 1
     disk:
       name: paper-journal
