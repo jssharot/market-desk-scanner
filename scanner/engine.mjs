@@ -1,5 +1,7 @@
 export const RULES = Object.freeze({version:'paper-v1',symbols:['SPY','QQQ','AAPL','MSFT','NVDA','META','TSLA'],pollSeconds:15,openingMinutes:15,volumeMultiple:1.5,minDTE:7,maxDTE:21,minDelta:0.4,maxDelta:0.65,maxSpread:0.05,maxQuoteAgeSeconds:30,maxPremium:3,maxOpen:3,maxDailyLoss:500,feePerContract:0.65,slippage:0.01});
-export function eastern(t){const p=new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date(t)),v=k=>p.find(x=>x.type===k).value;return {date:v('year')+'-'+v('month')+'-'+v('day'),minute:+v('hour')*60 + +v('minute')};}
+const easternFormat=new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}),easternCache=new Map();
+export function eastern(t){const minute=Math.floor(new Date(t).getTime()/60000),known=easternCache.get(minute);if(known)return known;const p=easternFormat.formatToParts(new Date(minute*60000)),v=k=>p.find(x=>x.type===k).value,result=Object.freeze({date:v('year')+'-'+v('month')+'-'+v('day'),minute:+v('hour')*60 + +v('minute')});easternCache.set(minute,result);if(easternCache.size>10000)easternCache.delete(easternCache.keys().next().value);return result;}
+
 const avg=a=>a.reduce((s,x)=>s+x,0)/a.length;
 const ema=(a,n)=>a.reduce((s,x,i)=>i?s+(x-s)*2/(n+1):x,0);
 export function evaluateSignal(symbol,input,now=Date.now()){
