@@ -1,0 +1,12 @@
+{
+  "name": "market-desk-paper-scanner",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test scanner/engine.test.mjs",
+    "start": "node scanner/service.mjs"
+  }
+}
