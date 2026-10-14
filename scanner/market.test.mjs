@@ -30,3 +30,15 @@ test('tracking ignores closed positions and uses fresh bid for liquidation estim
  const p={id:'p1',symbol:'SPY',expiry:'2026-10-16',side:'call',strike:650,contracts:2,entryPremium:1.5,status:'open'};
  await m.setTracking({symbols:['SPY'],positions:[p,{...p,id:'closed',status:'closed'}]});await m.background();const r=await m.handle({method:'GET',url:'/tracking'});assert.equal(r.positions.length,1);assert.equal(r.positions[0].liveMark.pnl,100);assert.equal(r.positions[0].liveMark.liquidationValue,400);assert.ok(r.checkedAt);
 });
+test('company details preserve session timestamps and missing stats',async()=>{
+ const m=setup(async()=>({AAPL:{latestTrade:{p:100,t:'2026-10-13T20:00Z'},prevDailyBar:{c:99},dailyBar:{o:98,h:101,l:97,v:123,t:'2026-10-13T04:00Z'}}}),async()=>[{symbol:'AAPL',name:'Apple',exchange:'NASDAQ',attributes:['has_options'],tradable:true}]);
+ const c=await m.handle({method:'GET',url:'/company?symbol=AAPL'});assert.equal(c.name,'Apple');assert.equal(c.optionsEligible,true);assert.equal(c.quote.dayTime,'2026-10-13T04:00Z');assert.equal(c.quote.dayHigh,101);assert.equal(normalizeSnapshot('AAPL',{latestTrade:{p:100,t:'2026-10-13T20:00Z'},prevDailyBar:{c:99}}).dayHigh,null);
+ await assert.rejects(m.handle({method:'GET',url:'/company?symbol=../secret'}),/Invalid symbol/);
+});
+test('most-active ranking keeps provider time separate from check time and does not invent eligibility',async()=>{
+ const m=setup(async(p,args)=>{assert.equal(p,'/v1beta1/screener/stocks/most-actives');assert.equal(args.by,'volume');return {last_updated:'2026-10-13T20:00:00Z',most_actives:[{symbol:'AAPL',volume:100,trade_count:10},{symbol:'UNKNOWN',volume:90}]}},async()=>[{symbol:'AAPL',name:'Apple',attributes:['has_options']}]);
+ const r=await m.handle({method:'GET',url:'/most-active'});assert.equal(r.asOf,'2026-10-13T20:00:00Z');assert.equal(r.stocks[0].optionsEligible,true);assert.equal(r.stocks[1].optionsEligible,null);assert.equal(r.stocks[1].tradeCount,null);assert.equal(r.stocks[1].rank,2);assert.notEqual(r.checkedAt,r.asOf);
+});
+test('company news forwards a bounded history start and rejects invalid dates',async()=>{
+ let seen;const m=setup(async(p,args)=>{seen=args;return {news:[]}});const start=new Date(Date.now()-7*86400000).toISOString();await m.handle({method:'GET',url:'/news?symbols=AAPL&start='+encodeURIComponent(start)});assert.equal(seen.start,start);await assert.rejects(m.handle({method:'GET',url:'/news?start=bad'}),/Invalid news start/);
+});
