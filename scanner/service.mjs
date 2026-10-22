@@ -5,7 +5,7 @@ import {readFile,writeFile,rename,mkdir} from 'node:fs/promises';
 import {timingSafeEqual,webcrypto} from 'node:crypto';
 import {RULES,eastern,signalFor,evaluateSignal,inspectContracts,selectContract,freshQuote,openPaper,closeReason,closePaper,metrics} from './engine.mjs';
 import {pushNotify,validPushSubscription,pushId} from './push.mjs';
-import {assessV2,compareVersions,openV2,exitReasonV2,closeV2,V2_RULES} from './paper-v2.mjs';
+import {assessV2,compareVersions,openV2,exitReasonV2,closeV2,V2_RULES,selectV2Contract} from './paper-v2.mjs';
 if(!globalThis.crypto)globalThis.crypto=webcrypto;
 const env=process.env,dir=env.SCANNER_DATA_DIR||'/var/data/scanner',file=dir+'/state.json';
 if(!env.SCANNER_SHARED_SECRET||env.SCANNER_SHARED_SECRET.length<32)throw Error('SCANNER_SHARED_SECRET must contain at least 32 characters');
@@ -66,8 +66,7 @@ async function tick(){if(inFlight||stopped)return;inFlight=true;try{
   const current=sq.quotes?.[symbol];if(!freshQuote(current,Date.now()))continue;
   if(Math.abs((current.bp+current.ap)/2-signal.underlying)>signal.risk*0.25)continue;
   // Use the same live option market snapshots but a separate v2 budget and contract selection.
-  const report=inspectContracts(await chainFor(signal,now),signal,Date.now(),V2_RULES.maxPremiumDollars/100);
-  const contract=report.selected;if(!contract)continue;
+  const contract=selectV2Contract(await chainFor(signal,now),signal,Date.now());if(!contract)continue;
   const shadow=assessV2(signal,contract,{existing:store.v2Journal});
   if(!shadowDecisions.some(d=>d.signalId===id)){shadowDecisions.push({signalId:id,at:new Date().toISOString(),symbol,setup:signal.setup,...shadow});if(shadowDecisions.length>2000)shadowDecisions.shift();}
   if(!shadow.qualified)continue;
