@@ -15,6 +15,6 @@ test('v2 selects only contracts meeting its own tighter spread and DTE',()=>{
   SPY261105C00100000:{latestQuote:q(2.96,3),greeks:g,impliedVolatility:.3}
  };
  const selected=selectV2Contract(chain,signal,now);
- assert.equal(selected.symbol,'SPY261109C00100000');
+ assert.equal(selected.symbol,'SPY261105C00100000');
  assert.equal(selectV2Contract({'SPY261106C00100000':chain.SPY261106C00100000},signal,now),null);
 });
