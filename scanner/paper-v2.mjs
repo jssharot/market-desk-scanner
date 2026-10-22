@@ -22,9 +22,9 @@ export function openV2(signal,contract,now=Date.now()){
  const entryPremium=contract.ask+V2_RULES.slippage;
  return {...signal,id:signal.id.replace(/^paper-v1:/,'paper-v2-shadow:'),version:V2_RULES.version,contract,status:'open',openedAt:new Date(now).toISOString(),entryPremium,entryFee:V2_RULES.feePerContract,contracts:1,markPremium:contract.bid,fillModel:'Shadow buy ask + $0.01; sell bid - $0.01; $0.65 fee each way'};
 }
-export function exitReasonV2(p,underlying,q,minutesToClose){
+export function exitReasonV2(p,underlying,q,minutesToClose,now=Date.now()){
  if(minutesToClose<=5)return 'End of session';
- if(q&&freshQuote(q)){
+ if(q&&freshQuote(q,now)){
   if(q.bp<=p.entryPremium*(1-V2_RULES.stopLossFraction))return 'V2 premium stop';
   if(q.bp>=p.entryPremium*(1+V2_RULES.profitTargetFraction))return 'V2 premium target';
  }
