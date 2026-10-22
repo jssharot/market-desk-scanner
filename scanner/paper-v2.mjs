@@ -1,5 +1,6 @@
-// Independent paper-v2 shadow qualification. Does not place orders or mutate paper-v1.
-export const V2_RULES=Object.freeze({version:'paper-v2-shadow',maxPremiumDollars:1000,maxRiskDollars:75,maxSpread:0.025,minVolumeRatio:2,minDelta:0.45,maxDelta:0.60,minDTE:10,maxDTE:21,minimumTargetToRisk:1.8,stopLossFraction:0.12,profitTargetFraction:0.24,maxCorrelatedPositions:1});
+// Independent paper-v2 paper fills, no brokerage orders.
+import {freshQuote} from './engine.mjs';
+export const V2_RULES=Object.freeze({version:'paper-v2-shadow',maxPremiumDollars:1000,maxRiskDollars:75,maxSpread:0.025,minVolumeRatio:2,minDelta:0.45,maxDelta:0.60,minDTE:10,maxDTE:21,minimumTargetToRisk:1.8,stopLossFraction:0.12,profitTargetFraction:0.24,maxCorrelatedPositions:1,feePerContract:0.65,slippage:0.01});
 export function assessV2(signal,contract,{existing=[],eventRisk=false}={}){
  const reasons=[];
  if(!signal||!contract)return {qualified:false,reasons:['missing-signal-or-contract'],version:V2_RULES.version};
@@ -7,21 +8,39 @@ export function assessV2(signal,contract,{existing=[],eventRisk=false}={}){
  if(!['Trend pullback','Opening range breakout','Opening range breakdown'].includes(signal.setup))reasons.push('unsupported-setup');
  if(!Number.isFinite(signal.risk)||signal.risk<=0||Math.abs(signal.target-signal.underlying)/signal.risk<V2_RULES.minimumTargetToRisk)reasons.push('underlying-reward-risk');
  if(eventRisk)reasons.push('scheduled-event-risk');
- const price=(contract.ask+0.01)*100,delta=Math.abs(contract.greeks?.delta??NaN);
+ const price=(contract.ask+V2_RULES.slippage)*100,delta=Math.abs(contract.greeks?.delta??NaN);
  if(!Number.isFinite(price)||price>V2_RULES.maxPremiumDollars)reasons.push('premium-budget');
  if(!Number.isFinite(contract.spread)||contract.spread>V2_RULES.maxSpread)reasons.push('spread');
  if(!Number.isFinite(delta)||delta<V2_RULES.minDelta||delta>V2_RULES.maxDelta)reasons.push('delta');
  if(!Number.isFinite(contract.dte)||contract.dte<V2_RULES.minDTE||contract.dte>V2_RULES.maxDTE)reasons.push('expiration');
- // A premium-based stop is only a monitoring trigger, never a guaranteed fill.
- const risk=price*V2_RULES.stopLossFraction+1.30;
+ const risk=price*V2_RULES.stopLossFraction+2*V2_RULES.feePerContract;
  if(risk>V2_RULES.maxRiskDollars)reasons.push('risk-budget');
- if(existing.filter(p=>p.status==='open'&&p.version===V2_RULES.version).length>=V2_RULES.maxCorrelatedPositions)reasons.push('portfolio-exposure');
- return {version:V2_RULES.version,qualified:reasons.length===0,reasons,plannedPremium:price,estimatedStopRisk:risk,profitTargetPremium:(contract.ask+0.01)*(1+V2_RULES.profitTargetFraction),stopTriggerPremium:(contract.ask+0.01)*(1-V2_RULES.stopLossFraction)};
+ if(existing.filter(p=>p.status==='open').length>=V2_RULES.maxCorrelatedPositions)reasons.push('portfolio-exposure');
+ return {version:V2_RULES.version,qualified:reasons.length===0,reasons,plannedPremium:price,estimatedStopRisk:risk,profitTargetPremium:(contract.ask+V2_RULES.slippage)*(1+V2_RULES.profitTargetFraction),stopTriggerPremium:(contract.ask+V2_RULES.slippage)*(1-V2_RULES.stopLossFraction)};
 }
-export function compareVersions(v1Journal=[],shadowDecisions=[]){
- const closed=v1Journal.filter(p=>p.status==='closed');
- const wins=closed.filter(p=>p.pnl>0),losses=closed.filter(p=>p.pnl<0);
- const sum=a=>a.reduce((s,p)=>s+p.pnl,0);
+export function openV2(signal,contract,now=Date.now()){
+ const entryPremium=contract.ask+V2_RULES.slippage;
+ return {...signal,id:signal.id.replace(/^paper-v1:/,'paper-v2-shadow:'),version:V2_RULES.version,contract,status:'open',openedAt:new Date(now).toISOString(),entryPremium,entryFee:V2_RULES.feePerContract,contracts:1,markPremium:contract.bid,fillModel:'Shadow buy ask + $0.01; sell bid - $0.01; $0.65 fee each way'};
+}
+export function exitReasonV2(p,underlying,q,minutesToClose){
+ if(minutesToClose<=5)return 'End of session';
+ if(q&&freshQuote(q)){
+  if(q.bp<=p.entryPremium*(1-V2_RULES.stopLossFraction))return 'V2 premium stop';
+  if(q.bp>=p.entryPremium*(1+V2_RULES.profitTargetFraction))return 'V2 premium target';
+ }
+ if(Number.isFinite(underlying)){
+  if(p.side==='call'&&underlying<=p.stop||p.side==='put'&&underlying>=p.stop)return 'Underlying invalidation';
+  if(p.side==='call'&&underlying>=p.target||p.side==='put'&&underlying<=p.target)return 'Underlying 2R target';
+ }
+ return null;
+}
+export function closeV2(p,q,reason,now=Date.now()){
+ if(!freshQuote(q,now))return {...p,pendingExit:reason};
+ const exitPremium=Math.max(0,q.bp-V2_RULES.slippage);
+ return {...p,status:'closed',closedAt:new Date(now).toISOString(),exitPremium,exitQuoteTime:q.t,exitReason:reason,pendingExit:null,pnl:(exitPremium-p.entryPremium)*100-p.entryFee-V2_RULES.feePerContract,exitFee:V2_RULES.feePerContract};
+}
+export function compareVersions(v1Journal=[],v2Journal=[],shadowDecisions=[]){
+ const summarize=journal=>{const closed=journal.filter(p=>p.status==='closed'),wins=closed.filter(p=>p.pnl>0),losses=closed.filter(p=>p.pnl<0),sum=a=>a.reduce((s,p)=>s+p.pnl,0);return {trades:closed.length,open:journal.filter(p=>p.status==='open').length,netPnl:sum(closed),winRate:closed.length?wins.length/closed.length:null,averageWin:wins.length?sum(wins)/wins.length:null,averageLoss:losses.length?sum(losses)/losses.length:null};};
  const rejected={};for(const d of shadowDecisions)for(const reason of d.reasons||[])rejected[reason]=(rejected[reason]||0)+1;
- return {v1:{trades:closed.length,netPnl:sum(closed),winRate:closed.length?wins.length/closed.length:null,averageWin:wins.length?sum(wins)/wins.length:null,averageLoss:losses.length?sum(losses)/losses.length:null},v2:{mode:'qualification-only',evaluated:shadowDecisions.length,qualified:shadowDecisions.filter(d=>d.qualified).length,rejected,netPnl:null,winRate:null},note:'Paper-v2 has no simulated executions yet. Do not compare returns until a separate fill journal is implemented.'};
+ return {v1:summarize(v1Journal),v2:{...summarize(v2Journal),mode:'independent-paper-simulation',evaluated:shadowDecisions.length,qualified:shadowDecisions.filter(d=>d.qualified).length,rejected},note:'Both versions use simulated bid/ask fills; v2 premium stops are not guaranteed fills. Compare over enough market sessions, not only raw win rate.'};
 }
