@@ -58,7 +58,7 @@ async function tick(){if(inFlight||stopped)return;inFlight=true;try{
  if(minute>=Math.min(930,hours.close-30)){store.status='Exit monitoring only';return}
  phase='stock-bars';const bars=await barsFor(now);a.latest=[];store.status='Scanning SIP stocks / OPRA options';
  // Paper-v2 runs an independent entry/cooldown/contract path. Never changes paper-v1 journal or alerts.
- if(v2Enabled){for(const symbol of RULES.symbols){
+ if(v2Enabled){for(const symbol of RULES.symbols){try{
   const evaluation=evaluateSignal(symbol,bars[symbol]||[],now),signal=evaluation.signal;if(!signal)continue;
   const id=signal.id.replace(/^paper-v1:/,'paper-v2-shadow:');
   if(store.v2Journal.some(p=>p.id===id||p.status==='open'&&p.symbol===symbol))continue;
@@ -67,8 +67,7 @@ async function tick(){if(inFlight||stopped)return;inFlight=true;try{
   if(Math.abs((current.bp+current.ap)/2-signal.underlying)>signal.risk*0.25)continue;
   // Use the same live option market snapshots but a separate v2 budget and contract selection.
   const report=inspectContracts(await chainFor(signal,now),signal,Date.now(),V2_RULES.maxPremiumDollars/100);
-  const candidates=Object.entries(await Promise.resolve(report.selected?{selected:report.selected}:{})).map(([,v])=>v);
-  const contract=candidates[0];if(!contract)continue;
+  const contract=report.selected;if(!contract)continue;
   const shadow=assessV2(signal,contract,{existing:store.v2Journal});
   if(!shadowDecisions.some(d=>d.signalId===id)){shadowDecisions.push({signalId:id,at:new Date().toISOString(),symbol,setup:signal.setup,...shadow});if(shadowDecisions.length>2000)shadowDecisions.shift();}
   if(!shadow.qualified)continue;
@@ -78,6 +77,7 @@ async function tick(){if(inFlight||stopped)return;inFlight=true;try{
   if(Math.abs(spot-signal.underlying)>signal.risk*0.25||signal.side==='call'&&spot<=signal.stop||signal.side==='put'&&spot>=signal.stop)continue;
   if(!freshQuote({bp:contract.bid,ap:contract.ask,bs:contract.bidSize,as:contract.askSize,t:contract.quoteTime},checked))continue;
   store.v2Journal.push({...openV2(signal,contract,checked),entryUnderlying:spot,entryStockQuoteTime:latest.t});
+ }catch(e){console.error('Paper-v2 isolated scan error '+symbol+': '+e.message)}
  }}
  for(const symbol of RULES.symbols){const evaluation=evaluateSignal(symbol,bars[symbol]||[],now),row=recordScan(symbol,evaluation),signal=evaluation.signal;const reject=(reason,detail,extra={})=>recordScan(symbol,{...evaluation,reason,detail},extra);if(store.journal.filter(p=>p.status==='open').length>=RULES.maxOpen){reject('open-limit','Three paper positions already open');continue}if(store.journal.some(p=>p.symbol===symbol&&p.status==='open')){reject('position-open','Already monitoring a paper position in this symbol');continue}if(!signal)continue;if(store.journal.some(p=>p.id===signal.id)){reject('already-recorded','This signal is already in the journal');continue;}
  // One attempt per symbol/setup/direction each session prevents repeated whipsaw entries.
