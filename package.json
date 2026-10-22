@@ -6,7 +6,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "node --test scanner/engine.test.mjs",
+    "test": "node --test scanner/*.test.mjs",
     "start": "node scanner/service.mjs"
   }
 }
