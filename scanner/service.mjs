@@ -9,6 +9,8 @@ import {assessV2,compareVersions,openV2,exitReasonV2,closeV2,V2_RULES} from './p
 if(!globalThis.crypto)globalThis.crypto=webcrypto;
 const env=process.env,dir=env.SCANNER_DATA_DIR||'/var/data/scanner',file=dir+'/state.json';
 if(!env.SCANNER_SHARED_SECRET||env.SCANNER_SHARED_SECRET.length<32)throw Error('SCANNER_SHARED_SECRET must contain at least 32 characters');
+// Paper-v2 simulation is disabled by default until separately enabled after validation.
+const v2Enabled=env.PAPER_V2_ENABLED==='true';
 await mkdir(dir,{recursive:true});
 let store;try{store=JSON.parse(await readFile(file,'utf8'))}catch(e){if(e.code!=='ENOENT')throw e;store={paused:true,journal:[],events:[],subscriptions:{},delivered:{},lastCheck:null,status:'Waiting for data credentials',missedChecks:0};}
 store.v2Journal??=[];store.v2Decisions??=[];
@@ -68,7 +70,7 @@ async function tick(){if(inFlight||stopped)return;inFlight=true;try{
  phase='entry-recheck:'+symbol;const latest=(await data('/v2/stocks/quotes/latest',{symbols:symbol,feed:'sip'})).quotes?.[symbol],checked=Date.now();if(!freshQuote(latest,checked)||checked>Date.parse(signal.validUntil)){reject('trigger-expired','Quote stale or trigger expired during contract lookup');continue;}
  const spot=(latest.bp+latest.ap)/2;if(Math.abs(spot-signal.underlying)>signal.risk*0.25||signal.side==='call'&&spot<=signal.stop||signal.side==='put'&&spot>=signal.stop){reject('recheck-moved','Stock moved outside entry tolerance or invalidated during lookup');continue;}
  if(!freshQuote({bp:contract.bid,ap:contract.ask,bs:contract.bidSize,as:contract.askSize,t:contract.quoteTime},checked)){reject('contract-stale','Selected option quote became stale during recheck');continue;}
- if(shadow.qualified&&!store.v2Journal.some(p=>p.id===signal.id.replace(/^paper-v1:/,'paper-v2-shadow:'))){const v2=openV2(signal,contract,checked);store.v2Journal.push({...v2,entryUnderlying:spot,entryStockQuoteTime:latest.t});}
+ if(v2Enabled&&shadow.qualified&&!store.v2Journal.some(p=>p.id===signal.id.replace(/^paper-v1:/,'paper-v2-shadow:'))){const v2=openV2(signal,contract,checked);store.v2Journal.push({...v2,entryUnderlying:spot,entryStockQuoteTime:latest.t});}
  reject('paper-entry','Qualified and recorded in the paper journal',{contractCheck:{...report,selected:undefined}});const p={...openPaper(signal,contract,checked),paperPremiumBudget:(store.paperSettings?.maxPremium||RULES.maxPremium)*100,entryUnderlying:spot,entryStockQuoteTime:latest.t,newsContext:context};store.journal.push(p);await event(p,'PAPER ENTRY');
  }
  a.successfulChecks++;store.lastSuccess=new Date().toISOString();store.lastError=null;
@@ -77,7 +79,7 @@ const authorized=req=>{const value=req.headers.authorization||'',expected='Beare
 async function body(req){let text='';for await(const part of req){text+=part;if(text.length>20000)throw Error('Request too large')}return JSON.parse(text)}
 const server=createServer(async(req,res)=>{res.setHeader('content-type','application/json');res.setHeader('cache-control','no-store');const send=(status,v)=>{res.writeHead(status);res.end(JSON.stringify(v))};try{if(req.url==='/health')return send(200,{ok:true});if(!authorized(req))return send(401,{error:'Unauthorized'});if(req.method==='GET'){const result=await market.handle(req);if(result!==null)return send(200,result)}if(req.method==='POST'&&req.url==='/tracking'){return send(200,await market.setTracking(await body(req)))}
  if(req.method==='GET'&&req.url==='/audit')return send(200,await audit());
- if(req.method==='GET'&&req.url==='/paper-v2/comparison')return send(200,compareVersions(store.journal,store.v2Journal,shadowDecisions));
+ if(req.method==='GET'&&req.url==='/paper-v2/comparison')return send(200,{enabled:v2Enabled,...compareVersions(store.journal,store.v2Journal,shadowDecisions)});
  if(req.method==='GET'&&req.url==='/paper-v2/journal')return send(200,{journal:store.v2Journal,comparison:compareVersions(store.journal,store.v2Journal,shadowDecisions)});
  if(req.method==='POST'&&req.url==='/settings'){const b=await body(req);if(![300,500,1000,2000].includes(b.paperPremiumBudget))throw Error('Invalid paper budget');store.paperSettings={maxPremium:b.paperPremiumBudget/100};await save();return send(200,{saved:true,paperPremiumBudget:b.paperPremiumBudget})}
  if(req.method==='GET'&&req.url==='/state')return send(200,{connected:store.feedVerified===true,credentialsConfigured:Boolean(env.ALPACA_API_KEY&&env.ALPACA_SECRET_KEY),publicKey:env.VAPID_PUBLIC_KEY||'',notificationsAvailable:Boolean(env.VAPID_PUBLIC_KEY&&env.VAPID_PRIVATE_JWK),mode:'paper',paused:store.paused,status:store.status,lastCheck:store.lastCheck,rules:RULES,journal:store.journal,events:store.events.slice(0,100),metrics:metrics(store.journal),alertPipeline:pipelineState(),activity:activityView(),lastError:store.lastError||null,lastSuccess:store.lastSuccess||null,paperSettings:{maxPremium:store.paperSettings?.maxPremium||RULES.maxPremium},missedChecks:store.missedChecks,session:store.session});
