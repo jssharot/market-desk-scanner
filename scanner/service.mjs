@@ -67,7 +67,9 @@ async function tick(){if(inFlight||stopped)return;inFlight=true;try{
   if(Math.abs((current.bp+current.ap)/2-signal.underlying)>signal.risk*0.25)continue;
   // Use the same live option market snapshots but a separate v2 budget and contract selection.
   const contract=selectV2Contract(await chainFor(signal,now),signal,Date.now());if(!contract)continue;
-  const shadow=assessV2(signal,contract,{existing:store.v2Journal});
+  // Until a verified earnings calendar is connected, block single-stock v2 entries.
+  const eventRisk=!['SPY','QQQ'].includes(symbol);
+  const shadow=assessV2(signal,contract,{existing:store.v2Journal,eventRisk});
   if(!shadowDecisions.some(d=>d.signalId===id)){shadowDecisions.push({signalId:id,at:new Date().toISOString(),symbol,setup:signal.setup,...shadow});if(shadowDecisions.length>2000)shadowDecisions.shift();}
   if(!shadow.qualified)continue;
   const latest=(await data('/v2/stocks/quotes/latest',{symbols:symbol,feed:'sip'})).quotes?.[symbol],checked=Date.now();
