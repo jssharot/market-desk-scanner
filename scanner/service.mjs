@@ -5,12 +5,13 @@ import {readFile,writeFile,rename,mkdir} from 'node:fs/promises';
 import {timingSafeEqual,webcrypto} from 'node:crypto';
 import {RULES,eastern,signalFor,evaluateSignal,inspectContracts,selectContract,freshQuote,openPaper,closeReason,closePaper,metrics} from './engine.mjs';
 import {pushNotify,validPushSubscription,pushId} from './push.mjs';
-import {assessV2,compareVersions} from './paper-v2.mjs';
+import {assessV2,compareVersions,openV2,exitReasonV2,closeV2,V2_RULES} from './paper-v2.mjs';
 if(!globalThis.crypto)globalThis.crypto=webcrypto;
 const env=process.env,dir=env.SCANNER_DATA_DIR||'/var/data/scanner',file=dir+'/state.json';
 if(!env.SCANNER_SHARED_SECRET||env.SCANNER_SHARED_SECRET.length<32)throw Error('SCANNER_SHARED_SECRET must contain at least 32 characters');
 await mkdir(dir,{recursive:true});
 let store;try{store=JSON.parse(await readFile(file,'utf8'))}catch(e){if(e.code!=='ENOENT')throw e;store={paused:true,journal:[],events:[],subscriptions:{},delivered:{},lastCheck:null,status:'Waiting for data credentials',missedChecks:0};}
+store.v2Journal??=[];store.v2Decisions??=[];
 let saveQueue=Promise.resolve();function save(){const data=JSON.stringify(store);saveQueue=saveQueue.then(async()=>{await writeFile(file+'.tmp',data,{mode:0o600});await rename(file+'.tmp',file)});return saveQueue;}
 const bucket={async list({prefix}){return {objects:Object.keys(store.subscriptions).filter(k=>('push-subscriptions/'+k+'.json').startsWith(prefix)).map(k=>({key:'push-subscriptions/'+k+'.json'})),truncated:false}},async get(key){const v=key.startsWith('push-delivered/')?store.delivered[key]:store.subscriptions[key.split('/')[1]?.replace(/\.json$/,'')];return v?{json:async()=>v}:null},async put(key,data){if(key.startsWith('push-delivered/'))store.delivered[key]=JSON.parse(data);else store.subscriptions[key.split('/')[1].replace(/\.json$/,'')]=JSON.parse(data);await save()},async delete(key){delete store.subscriptions[key.split('/')[1].replace(/\.json$/,'')];await save()}};
 const pushEnv={BUCKET:bucket,VAPID_PUBLIC_KEY:env.VAPID_PUBLIC_KEY,VAPID_PRIVATE_JWK:env.VAPID_PRIVATE_JWK};
@@ -20,7 +21,7 @@ const market=createMarket({data,api,store,save,pushEnv});
 let sessionCache;async function session(now){const date=eastern(now).date;if(sessionCache?.date===date)return sessionCache;const rows=await api('https://paper-api.alpaca.markets','/v2/calendar',{start:date,end:date}),row=rows[0],minutes=s=>+s.slice(0,2)*60 + +s.slice(3,5);sessionCache={date,open:row?minutes(row.open):null,close:row?minutes(row.close):null};return sessionCache;}
 async function barsFor(now){const all={},end=new Date(Math.floor(now/60000)*60000-1).toISOString();let token;do{const r=await data('/v2/stocks/bars',{symbols:RULES.symbols.join(','),timeframe:'1Min',start:eastern(now).date+'T00:00:00Z',end,feed:'sip',limit:'10000',...(token?{page_token:token}:{})});for(const [s,b]of Object.entries(r.bars||{}))all[s]=[...(all[s]||[]),...b];token=r.next_page_token;}while(token);return all;}
 async function chainFor(s,now){const today=eastern(now).date,plus=n=>new Date(Date.parse(today+'T12:00Z')+n*86400000).toISOString().slice(0,10),out={};let token;do{const r=await data('/v1beta1/options/snapshots/'+s.symbol,{feed:'opra',type:s.side,expiration_date_gte:plus(RULES.minDTE),expiration_date_lte:plus(RULES.maxDTE),strike_price_gte:s.underlying*0.95,strike_price_lte:s.underlying*1.05,limit:'1000',...(token?{page_token:token}:{})});Object.assign(out,r.snapshots);token=r.next_page_token;}while(token);return out;}
-const shadowDecisions=[];
+const shadowDecisions=store.v2Decisions;
 const catalystCache=new Map();
 async function checkNews(symbol){const prior=catalystCache.get(symbol);if(prior&&Date.now()-Date.parse(prior.checkedAt)<60000)return prior;const at=Date.now(),r=await data('/v1beta1/news',{symbols:symbol,start:new Date(at-86400000).toISOString(),end:new Date(at).toISOString(),sort:'desc',limit:'10',include_content:'false'}),context=newsContext(symbol,r.news||[],new Date(at).toISOString());catalystCache.set(symbol,context);return context;}
 async function event(p,action){const e=buildTradeAlert(p,action);if(store.events.some(x=>x.id===e.id))return;store.events.unshift(e);store.events=store.events.slice(0,2000);await save();}
@@ -38,11 +39,16 @@ async function tick(){if(inFlight||stopped)return;inFlight=true;try{
  if(hours.open===null){store.status='Market holiday / weekend';return}
  if(minute<hours.open||minute>=hours.close){store.status='Market closed';return}
  // A restart never invents exits for missed periods. Any unclosed prior-day trades await a fresh quote.
- phase='stock-and-open-option-quotes';const open=store.journal.filter(p=>p.status==='open'),symbols=[...new Set([...RULES.symbols,...open.map(p=>p.symbol)])],sq=await data('/v2/stocks/quotes/latest',{symbols:symbols.join(','),feed:'sip'}),options=open.length?await data('/v1beta1/options/quotes/latest',{symbols:open.map(p=>p.contract.symbol).join(','),feed:'opra'}):{quotes:{}};
+ phase='stock-and-open-option-quotes';const open=store.journal.filter(p=>p.status==='open'),v2Open=store.v2Journal.filter(p=>p.status==='open'),symbols=[...new Set([...RULES.symbols,...open.map(p=>p.symbol),...v2Open.map(p=>p.symbol)])],sq=await data('/v2/stocks/quotes/latest',{symbols:symbols.join(','),feed:'sip'}),options=open.length||v2Open.length?await data('/v1beta1/options/quotes/latest',{symbols:[...new Set([...open,...v2Open].map(p=>p.contract.symbol))].join(','),feed:'opra'}):{quotes:{}};
  for(const p of open){const q=options.quotes?.[p.contract.symbol],u=sq.quotes?.[p.symbol],oldDay=eastern(p.openedAt).date!==hours.date;
  const reason=p.pendingExit||(oldDay?'Recovered after monitoring gap':hours.close-minute<=5?'End of session':freshQuote(u)?closeReason(p,(u.bp+u.ap)/2,freshQuote(q)?q:null,hours.close-minute):null);
  if(reason){const next=closePaper(p,q,reason,now);Object.assign(p,next);if(p.status==='closed')await event(p,'PAPER EXIT');else if(p.pendingExit)await event(p,'PAPER EXIT PENDING')}
  else if(freshQuote(q)){p.markPremium=q.bp;p.markTime=q.t;p.unrealizedPnl=(q.bp-RULES.slippage-p.entryPremium)*100-p.entryFee-RULES.feePerContract}
+ }
+ for(const p of v2Open){const q=options.quotes?.[p.contract.symbol],u=sq.quotes?.[p.symbol],oldDay=eastern(p.openedAt).date!==hours.date;
+ const reason=p.pendingExit||(oldDay?'Recovered after monitoring gap':exitReasonV2(p,freshQuote(u)?(u.bp+u.ap)/2:NaN,q,hours.close-minute));
+ if(reason)Object.assign(p,closeV2(p,q,reason,now));
+ else if(freshQuote(q)){p.markPremium=q.bp;p.markTime=q.t;p.unrealizedPnl=(q.bp-V2_RULES.slippage-p.entryPremium)*100-p.entryFee-V2_RULES.feePerContract;}
  }
  const closedToday=store.journal.filter(p=>p.status==='closed'&&eastern(p.closedAt).date===hours.date),dailyPnl=closedToday.reduce((s,p)=>s+p.pnl,0);
  if(store.paused){store.status='Paper entries paused; open simulations still monitored';return}
@@ -56,12 +62,13 @@ async function tick(){if(inFlight||stopped)return;inFlight=true;try{
  const price=(current.bp+current.ap)/2;if(Math.abs(price-signal.underlying)>signal.risk*0.25){reject('price-moved','Stock moved outside the trigger entry tolerance');continue;}
  phase='news-context:'+symbol;const context=await checkNews(symbol);
  phase='option-chain:'+symbol;const report=inspectContracts(await chainFor(signal,now),signal,Date.now(),store.paperSettings?.maxPremium||RULES.maxPremium),contract=report.selected;if(!contract){reject('contract-filter','Underlying qualified; no contract passes all filters',{contractCheck:report});continue;}
- // Qualification-only shadow: paper-v1 remains unchanged; no v2 orders or invented returns.
- const shadow=assessV2(signal,contract,{existing:store.journal});shadowDecisions.push({at:new Date().toISOString(),symbol,setup:signal.setup,...shadow});if(shadowDecisions.length>2000)shadowDecisions.shift();
+ // Independent v2 journal, using the same verified underlying trigger and current option quote.
+ const shadow=assessV2(signal,contract,{existing:store.v2Journal});shadowDecisions.push({at:new Date().toISOString(),symbol,setup:signal.setup,...shadow});if(shadowDecisions.length>2000)shadowDecisions.shift();
  // Recheck stock after chain request; do not simulate an entry after trigger expiry or invalidation.
  phase='entry-recheck:'+symbol;const latest=(await data('/v2/stocks/quotes/latest',{symbols:symbol,feed:'sip'})).quotes?.[symbol],checked=Date.now();if(!freshQuote(latest,checked)||checked>Date.parse(signal.validUntil)){reject('trigger-expired','Quote stale or trigger expired during contract lookup');continue;}
  const spot=(latest.bp+latest.ap)/2;if(Math.abs(spot-signal.underlying)>signal.risk*0.25||signal.side==='call'&&spot<=signal.stop||signal.side==='put'&&spot>=signal.stop){reject('recheck-moved','Stock moved outside entry tolerance or invalidated during lookup');continue;}
  if(!freshQuote({bp:contract.bid,ap:contract.ask,bs:contract.bidSize,as:contract.askSize,t:contract.quoteTime},checked)){reject('contract-stale','Selected option quote became stale during recheck');continue;}
+ if(shadow.qualified&&!store.v2Journal.some(p=>p.id===signal.id.replace(/^paper-v1:/,'paper-v2-shadow:'))){const v2=openV2(signal,contract,checked);store.v2Journal.push({...v2,entryUnderlying:spot,entryStockQuoteTime:latest.t});}
  reject('paper-entry','Qualified and recorded in the paper journal',{contractCheck:{...report,selected:undefined}});const p={...openPaper(signal,contract,checked),paperPremiumBudget:(store.paperSettings?.maxPremium||RULES.maxPremium)*100,entryUnderlying:spot,entryStockQuoteTime:latest.t,newsContext:context};store.journal.push(p);await event(p,'PAPER ENTRY');
  }
  a.successfulChecks++;store.lastSuccess=new Date().toISOString();store.lastError=null;
@@ -70,7 +77,8 @@ const authorized=req=>{const value=req.headers.authorization||'',expected='Beare
 async function body(req){let text='';for await(const part of req){text+=part;if(text.length>20000)throw Error('Request too large')}return JSON.parse(text)}
 const server=createServer(async(req,res)=>{res.setHeader('content-type','application/json');res.setHeader('cache-control','no-store');const send=(status,v)=>{res.writeHead(status);res.end(JSON.stringify(v))};try{if(req.url==='/health')return send(200,{ok:true});if(!authorized(req))return send(401,{error:'Unauthorized'});if(req.method==='GET'){const result=await market.handle(req);if(result!==null)return send(200,result)}if(req.method==='POST'&&req.url==='/tracking'){return send(200,await market.setTracking(await body(req)))}
  if(req.method==='GET'&&req.url==='/audit')return send(200,await audit());
- if(req.method==='GET'&&req.url==='/paper-v2/comparison')return send(200,compareVersions(store.journal,shadowDecisions));
+ if(req.method==='GET'&&req.url==='/paper-v2/comparison')return send(200,compareVersions(store.journal,store.v2Journal,shadowDecisions));
+ if(req.method==='GET'&&req.url==='/paper-v2/journal')return send(200,{journal:store.v2Journal,comparison:compareVersions(store.journal,store.v2Journal,shadowDecisions)});
  if(req.method==='POST'&&req.url==='/settings'){const b=await body(req);if(![300,500,1000,2000].includes(b.paperPremiumBudget))throw Error('Invalid paper budget');store.paperSettings={maxPremium:b.paperPremiumBudget/100};await save();return send(200,{saved:true,paperPremiumBudget:b.paperPremiumBudget})}
  if(req.method==='GET'&&req.url==='/state')return send(200,{connected:store.feedVerified===true,credentialsConfigured:Boolean(env.ALPACA_API_KEY&&env.ALPACA_SECRET_KEY),publicKey:env.VAPID_PUBLIC_KEY||'',notificationsAvailable:Boolean(env.VAPID_PUBLIC_KEY&&env.VAPID_PRIVATE_JWK),mode:'paper',paused:store.paused,status:store.status,lastCheck:store.lastCheck,rules:RULES,journal:store.journal,events:store.events.slice(0,100),metrics:metrics(store.journal),alertPipeline:pipelineState(),activity:activityView(),lastError:store.lastError||null,lastSuccess:store.lastSuccess||null,paperSettings:{maxPremium:store.paperSettings?.maxPremium||RULES.maxPremium},missedChecks:store.missedChecks,session:store.session});
  if(req.method==='POST'&&req.url==='/diagnostics'){try{const q=await data('/v2/stocks/quotes/latest',{symbols:'SPY',feed:'sip'}),chain=await data('/v1beta1/options/snapshots/SPY',{feed:'opra',limit:'1'});if(!q.quotes?.SPY||!Object.keys(chain.snapshots||{}).length)throw Error('Provider returned no data');await session(Date.now());store.feedVerified=true;store.diagnostics={checkedAt:new Date().toISOString(),stockFeed:'sip',optionFeed:'opra',stockQuoteTime:q.quotes.SPY.t,optionContractsReturned:Object.keys(chain.snapshots).length,calendar:true};await save();return send(200,{verified:true,...store.diagnostics})}catch(e){store.feedVerified=false;await save();return send(503,{verified:false,error:e.message})}}
