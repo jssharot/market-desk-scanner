@@ -48,7 +48,7 @@ export function compareVersions(v1Journal=[],v2Journal=[],shadowDecisions=[]){
 export function selectV2Contract(chain,signal,now=Date.now()){
  const today=eastern(now).date,candidates=[];
  for(const [symbol,s] of Object.entries(chain||{})){
-  const m=symbol.match(/^(\\w+)(\\d{6})([CP])(\\d{8})$/);
+  const m=symbol.match(/^(\w+)(\d{6})([CP])(\d{8})$/);
   if(!m||m[1]!==signal.symbol||m[3]!== (signal.side==='call'?'C':'P'))continue;
   const expiry='20'+m[2].slice(0,2)+'-'+m[2].slice(2,4)+'-'+m[2].slice(4,6);
   const dte=(Date.parse(expiry+'T12:00Z')-Date.parse(today+'T12:00Z'))/86400000;
