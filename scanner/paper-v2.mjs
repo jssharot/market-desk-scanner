@@ -1,5 +1,5 @@
 // Independent paper-v2 paper fills, no brokerage orders.
-import {freshQuote} from './engine.mjs';
+import {freshQuote,eastern} from './engine.mjs';
 export const V2_RULES=Object.freeze({version:'paper-v2-shadow',maxPremiumDollars:1000,maxRiskDollars:75,maxSpread:0.025,minVolumeRatio:2,minDelta:0.45,maxDelta:0.60,minDTE:10,maxDTE:21,minimumTargetToRisk:1.8,stopLossFraction:0.12,profitTargetFraction:0.24,maxCorrelatedPositions:1,feePerContract:0.65,slippage:0.01});
 export function assessV2(signal,contract,{existing=[],eventRisk=false}={}){
  const reasons=[];
@@ -43,4 +43,21 @@ export function compareVersions(v1Journal=[],v2Journal=[],shadowDecisions=[]){
  const summarize=journal=>{const closed=journal.filter(p=>p.status==='closed'),wins=closed.filter(p=>p.pnl>0),losses=closed.filter(p=>p.pnl<0),sum=a=>a.reduce((s,p)=>s+p.pnl,0);return {trades:closed.length,open:journal.filter(p=>p.status==='open').length,netPnl:sum(closed),winRate:closed.length?wins.length/closed.length:null,averageWin:wins.length?sum(wins)/wins.length:null,averageLoss:losses.length?sum(losses)/losses.length:null};};
  const rejected={};for(const d of shadowDecisions)for(const reason of d.reasons||[])rejected[reason]=(rejected[reason]||0)+1;
  return {v1:summarize(v1Journal),v2:{...summarize(v2Journal),mode:'independent-paper-simulation',evaluated:shadowDecisions.length,qualified:shadowDecisions.filter(d=>d.qualified).length,rejected},note:'Both versions use simulated bid/ask fills; v2 premium stops are not guaranteed fills. Compare over enough market sessions, not only raw win rate.'};
+}
+
+export function selectV2Contract(chain,signal,now=Date.now()){
+ const today=eastern(now).date,candidates=[];
+ for(const [symbol,s] of Object.entries(chain||{})){
+  const m=symbol.match(/^(\\w+)(\\d{6})([CP])(\\d{8})$/);
+  if(!m||m[1]!==signal.symbol||m[3]!== (signal.side==='call'?'C':'P'))continue;
+  const expiry='20'+m[2].slice(0,2)+'-'+m[2].slice(2,4)+'-'+m[2].slice(4,6);
+  const dte=(Date.parse(expiry+'T12:00Z')-Date.parse(today+'T12:00Z'))/86400000;
+  const q=s.latestQuote,g=s.greeks;
+  if(!freshQuote(q,now)||!g||!['delta','gamma','theta','vega'].every(k=>Number.isFinite(g[k]))||!Number.isFinite(s.impliedVolatility)||s.impliedVolatility<=0)continue;
+  const delta=Math.abs(g.delta),spread=(q.ap-q.bp)/((q.ap+q.bp)/2);
+  if(dte<V2_RULES.minDTE||dte>V2_RULES.maxDTE||delta<V2_RULES.minDelta||delta>V2_RULES.maxDelta||spread>V2_RULES.maxSpread||q.ap+V2_RULES.slippage>V2_RULES.maxPremiumDollars/100)continue;
+  if(signal.side==='call'&&g.delta<=0||signal.side==='put'&&g.delta>=0)continue;
+  candidates.push({symbol,expiry,strike:+m[4]/1000,bid:q.bp,ask:q.ap,quoteTime:q.t,spread,greeks:g,iv:s.impliedVolatility,dte,bidSize:q.bs,askSize:q.as});
+ }
+ return candidates.sort((a,b)=>Math.abs(Math.abs(a.greeks.delta)-0.5)-Math.abs(Math.abs(b.greeks.delta)-0.5)||a.spread-b.spread)[0]||null;
 }
