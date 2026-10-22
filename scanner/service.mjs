@@ -57,6 +57,28 @@ async function tick(){if(inFlight||stopped)return;inFlight=true;try{
  if(dailyPnl<=-RULES.maxDailyLoss){store.status='Daily paper loss limit reached';return}
  if(minute>=Math.min(930,hours.close-30)){store.status='Exit monitoring only';return}
  phase='stock-bars';const bars=await barsFor(now);a.latest=[];store.status='Scanning SIP stocks / OPRA options';
+ // Paper-v2 runs an independent entry/cooldown/contract path. Never changes paper-v1 journal or alerts.
+ if(v2Enabled){for(const symbol of RULES.symbols){
+  const evaluation=evaluateSignal(symbol,bars[symbol]||[],now),signal=evaluation.signal;if(!signal)continue;
+  const id=signal.id.replace(/^paper-v1:/,'paper-v2-shadow:');
+  if(store.v2Journal.some(p=>p.id===id||p.status==='open'&&p.symbol===symbol))continue;
+  if(store.v2Journal.some(p=>eastern(p.openedAt).date===hours.date&&p.symbol===symbol&&p.side===signal.side&&p.setup===signal.setup))continue;
+  const current=sq.quotes?.[symbol];if(!freshQuote(current,Date.now()))continue;
+  if(Math.abs((current.bp+current.ap)/2-signal.underlying)>signal.risk*0.25)continue;
+  // Use the same live option market snapshots but a separate v2 budget and contract selection.
+  const report=inspectContracts(await chainFor(signal,now),signal,Date.now(),V2_RULES.maxPremiumDollars/100);
+  const candidates=Object.entries(await Promise.resolve(report.selected?{selected:report.selected}:{})).map(([,v])=>v);
+  const contract=candidates[0];if(!contract)continue;
+  const shadow=assessV2(signal,contract,{existing:store.v2Journal});
+  if(!shadowDecisions.some(d=>d.signalId===id)){shadowDecisions.push({signalId:id,at:new Date().toISOString(),symbol,setup:signal.setup,...shadow});if(shadowDecisions.length>2000)shadowDecisions.shift();}
+  if(!shadow.qualified)continue;
+  const latest=(await data('/v2/stocks/quotes/latest',{symbols:symbol,feed:'sip'})).quotes?.[symbol],checked=Date.now();
+  if(!freshQuote(latest,checked)||checked>Date.parse(signal.validUntil))continue;
+  const spot=(latest.bp+latest.ap)/2;
+  if(Math.abs(spot-signal.underlying)>signal.risk*0.25||signal.side==='call'&&spot<=signal.stop||signal.side==='put'&&spot>=signal.stop)continue;
+  if(!freshQuote({bp:contract.bid,ap:contract.ask,bs:contract.bidSize,as:contract.askSize,t:contract.quoteTime},checked))continue;
+  store.v2Journal.push({...openV2(signal,contract,checked),entryUnderlying:spot,entryStockQuoteTime:latest.t});
+ }}
  for(const symbol of RULES.symbols){const evaluation=evaluateSignal(symbol,bars[symbol]||[],now),row=recordScan(symbol,evaluation),signal=evaluation.signal;const reject=(reason,detail,extra={})=>recordScan(symbol,{...evaluation,reason,detail},extra);if(store.journal.filter(p=>p.status==='open').length>=RULES.maxOpen){reject('open-limit','Three paper positions already open');continue}if(store.journal.some(p=>p.symbol===symbol&&p.status==='open')){reject('position-open','Already monitoring a paper position in this symbol');continue}if(!signal)continue;if(store.journal.some(p=>p.id===signal.id)){reject('already-recorded','This signal is already in the journal');continue;}
  // One attempt per symbol/setup/direction each session prevents repeated whipsaw entries.
  if(store.journal.some(p=>p.version===signal.version&&eastern(p.openedAt).date===hours.date&&p.symbol===symbol&&p.side===signal.side&&p.setup===signal.setup)){reject('session-cooldown','One paper attempt per setup and direction each session');continue;}
@@ -64,20 +86,17 @@ async function tick(){if(inFlight||stopped)return;inFlight=true;try{
  const price=(current.bp+current.ap)/2;if(Math.abs(price-signal.underlying)>signal.risk*0.25){reject('price-moved','Stock moved outside the trigger entry tolerance');continue;}
  phase='news-context:'+symbol;const context=await checkNews(symbol);
  phase='option-chain:'+symbol;const report=inspectContracts(await chainFor(signal,now),signal,Date.now(),store.paperSettings?.maxPremium||RULES.maxPremium),contract=report.selected;if(!contract){reject('contract-filter','Underlying qualified; no contract passes all filters',{contractCheck:report});continue;}
- // Independent v2 journal, using the same verified underlying trigger and current option quote.
- const shadow=assessV2(signal,contract,{existing:store.v2Journal});shadowDecisions.push({at:new Date().toISOString(),symbol,setup:signal.setup,...shadow});if(shadowDecisions.length>2000)shadowDecisions.shift();
  // Recheck stock after chain request; do not simulate an entry after trigger expiry or invalidation.
  phase='entry-recheck:'+symbol;const latest=(await data('/v2/stocks/quotes/latest',{symbols:symbol,feed:'sip'})).quotes?.[symbol],checked=Date.now();if(!freshQuote(latest,checked)||checked>Date.parse(signal.validUntil)){reject('trigger-expired','Quote stale or trigger expired during contract lookup');continue;}
  const spot=(latest.bp+latest.ap)/2;if(Math.abs(spot-signal.underlying)>signal.risk*0.25||signal.side==='call'&&spot<=signal.stop||signal.side==='put'&&spot>=signal.stop){reject('recheck-moved','Stock moved outside entry tolerance or invalidated during lookup');continue;}
  if(!freshQuote({bp:contract.bid,ap:contract.ask,bs:contract.bidSize,as:contract.askSize,t:contract.quoteTime},checked)){reject('contract-stale','Selected option quote became stale during recheck');continue;}
- if(v2Enabled&&shadow.qualified&&!store.v2Journal.some(p=>p.id===signal.id.replace(/^paper-v1:/,'paper-v2-shadow:'))){const v2=openV2(signal,contract,checked);store.v2Journal.push({...v2,entryUnderlying:spot,entryStockQuoteTime:latest.t});}
  reject('paper-entry','Qualified and recorded in the paper journal',{contractCheck:{...report,selected:undefined}});const p={...openPaper(signal,contract,checked),paperPremiumBudget:(store.paperSettings?.maxPremium||RULES.maxPremium)*100,entryUnderlying:spot,entryStockQuoteTime:latest.t,newsContext:context};store.journal.push(p);await event(p,'PAPER ENTRY');
  }
  a.successfulChecks++;store.lastSuccess=new Date().toISOString();store.lastError=null;
  }catch(e){store.status='Data connection error — entries withheld';store.missedChecks++;activity(Date.now()).errors++;store.lastError={phase,message:e.message,at:new Date().toISOString()};console.error('Scanner check failed: '+phase+' · '+e.message);}finally{await save();try{await notifications()}catch{}inFlight=false;}}
 const authorized=req=>{const value=req.headers.authorization||'',expected='Bearer '+env.SCANNER_SHARED_SECRET;return value.length===expected.length&&timingSafeEqual(Buffer.from(value),Buffer.from(expected))};
 async function body(req){let text='';for await(const part of req){text+=part;if(text.length>20000)throw Error('Request too large')}return JSON.parse(text)}
-const server=createServer(async(req,res)=>{res.setHeader('content-type','application/json');res.setHeader('cache-control','no-store');const send=(status,v)=>{res.writeHead(status);res.end(JSON.stringify(v))};try{if(req.url==='/health')return send(200,{ok:true});if(!authorized(req))return send(401,{error:'Unauthorized'});if(req.method==='GET'){const result=await market.handle(req);if(result!==null)return send(200,result)}if(req.method==='POST'&&req.url==='/tracking'){return send(200,await market.setTracking(await body(req)))}
+const server=createServer(async(req,res)=>{if(req.method==='GET'&&req.url==='/paper-v2/dashboard'){res.setHeader('content-type','text/html; charset=utf-8');res.setHeader('cache-control','no-store');res.setHeader('content-security-policy',"default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'");res.end(await readFile(new URL('./paper-v2-dashboard.html',import.meta.url),'utf8'));return}res.setHeader('content-type','application/json');res.setHeader('cache-control','no-store');const send=(status,v)=>{res.writeHead(status);res.end(JSON.stringify(v))};try{if(req.url==='/health')return send(200,{ok:true});if(!authorized(req))return send(401,{error:'Unauthorized'});if(req.method==='GET'){const result=await market.handle(req);if(result!==null)return send(200,result)}if(req.method==='POST'&&req.url==='/tracking'){return send(200,await market.setTracking(await body(req)))}
  if(req.method==='GET'&&req.url==='/audit')return send(200,await audit());
  if(req.method==='GET'&&req.url==='/paper-v2/comparison')return send(200,{enabled:v2Enabled,...compareVersions(store.journal,store.v2Journal,shadowDecisions)});
  if(req.method==='GET'&&req.url==='/paper-v2/journal')return send(200,{journal:store.v2Journal,comparison:compareVersions(store.journal,store.v2Journal,shadowDecisions)});
