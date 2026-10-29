@@ -25,7 +25,7 @@ async function backgroundScan(){
    try{
     const e=new URL('/expirations',base);e.searchParams.set('symbol',stock.symbol);
     const ex=await upstream(e.pathname+e.search);
-    const today=new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+    const dateParts=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date());const dateFields=Object.fromEntries(dateParts.map(p=>[p.type,p.value]));const today=dateFields.year+'-'+dateFields.month+'-'+dateFields.day;
     const dates=(ex.expirations||[]).filter(d=>{const diff=(Date.parse(d+'T12:00:00Z')-Date.parse(today+'T12:00:00Z'))/86400000;return diff>=0&&diff<=10});
     if(!dates.length)return null;
     const side=stock.changePercent>0?'call':'put';
@@ -42,7 +42,7 @@ async function backgroundScan(){
  }catch(e){scanState.lastError=e.message}
  finally{scanState.running=false}
 }
-setInterval(()=>{const t=easternNow();if(['Mon','Tue','Wed','Thu','Fri'].includes(t.weekday)&&t.minutes>=570&&t.minutes<=960)void backgroundScan()},300000).unref();
+const scanIfMarketHours=()=>{const t=easternNow();if(['Mon','Tue','Wed','Thu','Fri'].includes(t.weekday)&&t.minutes>=570&&t.minutes<=960)void backgroundScan()};setInterval(scanIfMarketHours,300000).unref();scanIfMarketHours();
 createServer(async(req,res)=>{const u=new URL(req.url,'http://localhost');
 if(u.pathname==='/health')return send(res,200,{ok:true,configured:!!secret&&!!access});
 if(req.method==='GET'&&['/','/index.html','/app.js'].includes(u.pathname)){res.writeHead(200,{'content-type':u.pathname==='/app.js'?'text/javascript':'text/html','cache-control':'no-store'});return res.end(await readFile(new URL(u.pathname==='/app.js'?'./app.js':'./index.html',import.meta.url)))}
