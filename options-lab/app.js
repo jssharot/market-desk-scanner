@@ -132,3 +132,51 @@ $('scan-watchlist').onclick=async()=>{
  }catch(e){$('scanner-status').textContent=e.message}
  finally{$('scan-watchlist').disabled=false}
 };
+const journalKey='olab-paper-journal-v1';
+function journalRead(){try{return JSON.parse(localStorage.getItem(journalKey)||'[]')}catch{return []}}
+function journalWrite(rows){localStorage.setItem(journalKey,JSON.stringify(rows));renderJournal()}
+function renderJournal(){
+ const rows=journalRead(),closed=rows.filter(x=>Number.isFinite(x.exit));
+ const pnl=closed.reduce((n,x)=>n+(x.exit-x.entry)*100,0);
+ $('journal-stats').textContent=rows.length+' tracked • '+closed.length+' closed • '+(closed.length?(100*closed.filter(x=>x.exit>x.entry).length/closed.length).toFixed(0)+'% win rate • ':'')+'Realized P/L '+(pnl>=0?'+':'')+money(pnl);
+ $('journal-rows').replaceChildren(...rows.map(x=>{
+  const tr=document.createElement('tr');
+  for(const value of [x.symbol+' '+x.expiry+' '+x.side+' '+x.strike,money(x.entry),Number.isFinite(x.exit)?money(x.exit):'Open',Number.isFinite(x.exit)?((x.exit/x.entry-1)*100).toFixed(1)+'%':'—']){
+   const td=document.createElement('td');td.textContent=value;tr.append(td);
+  }
+  const td=document.createElement('td'),b=document.createElement('button');
+  b.textContent=Number.isFinite(x.exit)?'Remove':'Close';
+  b.onclick=()=>{
+   const all=journalRead(),index=all.findIndex(y=>y.id===x.id);if(index<0)return;
+   if(Number.isFinite(x.exit)){if(!confirm('Remove this paper trade?'))return;all.splice(index,1)}
+   else{const value=prompt('Paper exit option premium per share (e.g. 2.50):');if(value===null)return;const exit=Number(value);if(!Number.isFinite(exit)||exit<0){alert('Enter a valid premium');return}all[index].exit=exit}
+   journalWrite(all);
+  };
+  td.append(b);tr.append(td);return tr;
+ }));
+}
+renderJournal();
+$('scan-options').onclick=async()=>{
+ $('scan-options').disabled=true;$('opportunities-status').textContent='Checking active stocks and live option chains…';
+ try{
+  const data=await api('/api/opportunities');
+  const results=$('opportunities-results');results.replaceChildren();
+  let count=0;
+  for(const item of data.candidates||[]){
+   const section=document.createElement('div');section.style.marginBottom='16px';
+   const heading=document.createElement('strong');heading.textContent=item.symbol+' • '+(Number(item.changePercent)>=0?'+':'')+Number(item.changePercent).toFixed(2)+'%';section.append(heading);
+   if(!(item.contracts||[]).length){const p=document.createElement('p');p.className='muted';p.textContent=item.reason||'No contracts passed freshness, liquidity and budget checks';section.append(p)}
+   for(const c of item.contracts||[]){
+    count++;const line=document.createElement('div');line.style.margin='8px 0';line.style.display='flex';line.style.gap='12px';line.style.alignItems='center';line.style.flexWrap='wrap';
+    const label=document.createElement('span');label.textContent=c.side.toUpperCase()+' '+c.strike+' • '+displayDate(item.expiry)+' • Ask '+money(c.ask)+' • '+money(c.screen.premiumDollars)+'/contract';
+    const btn=document.createElement('button');btn.textContent='Paper track';btn.onclick=()=>{
+     const entry=Number(c.ask);if(!Number.isFinite(entry)||entry<=0)return;
+     const rows=journalRead();rows.unshift({id:Date.now()+'-'+Math.random(),symbol:item.symbol,side:c.side,strike:c.strike,expiry:item.expiry,entry,createdAt:new Date().toISOString()});journalWrite(rows);btn.disabled=true;btn.textContent='Tracked';
+    };line.append(label,btn);section.append(line);
+   }
+   results.append(section);
+  }
+  $('opportunities-status').textContent=count+' eligible contracts across '+(data.candidates||[]).length+' movers • Checked '+quoteDate(data.checkedAt)+' • Not trade alerts';
+ }catch(e){$('opportunities-status').textContent=e.message}
+ finally{$('scan-options').disabled=false}
+};
