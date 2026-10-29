@@ -39,7 +39,7 @@ async function backgroundScan(){
     const bars=(intraday.bars||[]).filter(b=>Number.isFinite(b.h)&&Number.isFinite(b.l)&&Number.isFinite(b.c));
     const previous=bars.slice(-13,-1);
     const last=bars.at(-1);
-    if(previous.length<8||!last)return null;
+    if(previous.length<8||!last||Date.now()-Date.parse(last.t)>180000)return null;
     const recentHigh=Math.max(...previous.map(b=>b.h)),recentLow=Math.min(...previous.map(b=>b.l));
     const isBreakout=side==='call'?last.c>recentHigh:last.c<recentLow;
     const volumeAverage=previous.reduce((n,b)=>n+(Number(b.v)||0),0)/previous.length;
