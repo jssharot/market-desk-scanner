@@ -131,6 +131,16 @@ if(req.method==='GET'&&u.pathname==='/api/stock-quote'){
  return send(res,200,{quote:(j.quotes||[])[0]||null,checkedAt:j.checkedAt||null,source:j.source||'Alpaca SIP'});
 }
 if(req.method==='GET'&&u.pathname==='/api/expirations'){const q=new URL('/expirations',base);q.searchParams.set('symbol',symbol(u.searchParams.get('symbol')));return send(res,200,await upstream(q.pathname+q.search))}
+if(req.method==='GET'&&u.pathname==='/api/paper-quote'){
+ const sym=symbol(u.searchParams.get('symbol')),date=expiry(u.searchParams.get('expiry')),side=u.searchParams.get('side'),strike=Number(u.searchParams.get('strike'));
+ if(!['call','put'].includes(side)||!Number.isFinite(strike)||strike<=0)return send(res,400,{error:'Invalid paper contract'});
+ const q=new URL('/chain',base);for(const [k,v] of Object.entries({symbol:sym,expiry:date,side}))q.searchParams.set(k,v);
+ const chain=await upstream(q.pathname+q.search);
+ const c=(chain.contracts||[]).find(x=>Math.abs(Number(x.strike)-strike)<0.001);
+ if(!c||!Number.isFinite(c.bid)||c.bid<0)return send(res,200,{available:false,reason:'No valid bid'});
+ const age=Date.now()-Date.parse(c.quoteTime);
+ return send(res,200,{available:Number.isFinite(age)&&age>=0&&age<=30000&&Number(c.bidSize)>0,bid:c.bid,ask:c.ask,quoteTime:c.quoteTime,bidSize:c.bidSize,ageMs:age,source:'Alpaca OPRA; indicative, not executable'});
+}
 if(req.method==='GET'&&u.pathname==='/api/chain'){const sym=symbol(u.searchParams.get('symbol')),date=expiry(u.searchParams.get('expiry')),side=u.searchParams.get('side');if(!['call','put'].includes(side))throw Error('Invalid side');const q=new URL('/chain',base);for(const [k,v] of Object.entries({symbol:sym,expiry:date,side}))q.searchParams.set(k,v);const j=await upstream(q.pathname+q.search);return send(res,200,{...j,screened:(j.contracts||[]).map(c=>({...c,screen:screenContract({...c,expiry:date})}))})}
 return send(res,404,{error:'Not found'})
 }catch(e){send(res,400,{error:e.message})}
