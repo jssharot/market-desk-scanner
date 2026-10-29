@@ -27,14 +27,38 @@ if(req.method==='POST'&&u.pathname==='/api/ask'){
  let body='';for await(const chunk of req){body+=chunk;if(body.length>5000)return send(res,413,{error:'Question too long'})}
  let question;try{question=JSON.parse(body).question}catch{return send(res,400,{error:'Invalid request'})}
  if(typeof question!=='string'||!question.trim()||question.length>1000)return send(res,400,{error:'Question must be 1–1000 characters'});
- const symbols=[...new Set((question.toUpperCase().match(/\\b[A-Z]{2,5}\\b/g)||[]).filter(x=>!['WHAT','ABOUT','CALL','PUT','THIS','WITH','THE','FOR'].includes(x)))].slice(0,3);
- let marketContext={quotes:[],checkedAt:null};
- if(symbols.length){try{const target=new URL('/quotes',base);target.searchParams.set('symbols',symbols.join(','));marketContext=await upstream(target.pathname+target.search)}catch{}}
- const ai=await fetch('https://api.openai.com/v1/responses',{method:'POST',headers:{Authorization:'Bearer '+aiKey,'Content-Type':'application/json'},body:JSON.stringify({model:process.env.OPENAI_MODEL||'gpt-4.1-mini',instructions:'You are the Options Lab research assistant. Use only the supplied market context for price claims. Never invent live quotes, option chain data, trading signals, account balances, fills, or positions. If data is missing say so. Do not claim to execute trades. Keep responses concise and practical, distinguish research from advice.',input:'Question: '+question+'\\nMarket context: '+JSON.stringify(marketContext),max_output_tokens:650}),signal:AbortSignal.timeout(25000)});
+ const tickers=[...new Set((question.toUpperCase().match(/\\b[A-Z]{2,5}\\b/g)||[]).filter(x=>!['WHAT','ABOUT','CALL','PUT','THIS','WITH','THE','FOR','GOOD','SHORT','TERM','PLAY','WHATS','TRADE','OPTION','PRICE','DATA'].includes(x)))].slice(0,2);
+ const marketContext={checkedAt:new Date().toISOString(),stocks:[],options:[],errors:[]};
+ for(const ticker of tickers){
+  try{
+   const q=new URL('/quotes',base);q.searchParams.set('symbols',ticker);
+   const snapshot=await upstream(q.pathname+q.search);
+   marketContext.stocks.push({symbol:ticker,quote:(snapshot.quotes||[])[0]||null,checkedAt:snapshot.checkedAt,source:snapshot.source});
+  }catch{marketContext.errors.push(ticker+': stock quote unavailable')}
+  if(!/\\b(option|options|call|calls|put|puts|contract|strike|expiry|expiration|play)\\b/i.test(question))continue;
+  try{
+   const e=new URL('/expirations',base);e.searchParams.set('symbol',ticker);
+   const exp=await upstream(e.pathname+e.search);
+   const today=new Date().toLocaleDateString('en-CA',{timeZone:'America/New_York'});
+   const soon=(exp.expirations||[]).filter(d=>{const days=(Date.parse(d+'T12:00:00Z')-Date.parse(today+'T12:00:00Z'))/86400000;return days>=0&&days<=10}).slice(0,2);
+   for(const date of soon){
+    for(const side of ['call','put']){
+     try{
+      const q=new URL('/chain',base);for(const [k,v] of Object.entries({symbol:ticker,expiry:date,side}))q.searchParams.set(k,v);
+      const chain=await upstream(q.pathname+q.search);
+      const screened=(chain.contracts||[]).map(c=>({symbol:c.symbol,strike:c.strike,side,expiry:date,bid:c.bid,ask:c.ask,iv:c.iv,delta:c.greeks?.delta??null,quoteTime:c.quoteTime,screen:screenContract({...c,expiry:date})}));
+      const eligible=screened.filter(c=>c.screen.eligible).sort((a,b)=>a.screen.spreadPct-b.screen.spreadPct).slice(0,3);
+      marketContext.options.push({symbol:ticker,expiry:date,side,checkedAt:chain.checkedAt,source:chain.source,totalContracts:screened.length,eligible,eligibleCount:screened.filter(c=>c.screen.eligible).length});
+     }catch{marketContext.errors.push(ticker+' '+date+' '+side+': chain unavailable')}
+    }
+   }
+  }catch{marketContext.errors.push(ticker+': expirations unavailable')}
+ }
+ const ai=await fetch('https://api.openai.com/v1/responses',{method:'POST',headers:{Authorization:'Bearer '+aiKey,'Content-Type':'application/json'},body:JSON.stringify({model:process.env.OPENAI_MODEL||'gpt-4.1-mini',instructions:'You are the Options Lab research assistant. Use only the supplied timestamped Alpaca stock and OPRA option data for price claims. Explain whether quotes are stale and do not recommend trades based on stale quotes. If no eligible contracts, say so. Never invent live quotes, option chain data, trading signals, account balances, fills, or positions. If data is missing say so. Do not claim to execute trades. Keep responses concise and practical, distinguish research from advice.',input:'Question: '+question+'\\nMarket context: '+JSON.stringify(marketContext),max_output_tokens:650}),signal:AbortSignal.timeout(25000)});
  if(!ai.ok)return send(res,502,{error:'AI provider returned '+ai.status});
  const j=await ai.json();
  const answer=j.output_text||j.output?.flatMap(x=>x.content||[]).filter(x=>x.type==='output_text').map(x=>x.text).join('\\n')||'No answer available';
- return send(res,200,{answer,marketCheckedAt:marketContext.checkedAt||null});
+ return send(res,200,{answer,marketCheckedAt:marketContext.checkedAt||null,marketSources:marketContext.stocks.map(x=>x.source).concat(marketContext.options.map(x=>x.source)),dataWarnings:marketContext.errors});
 }
 if(req.method==='GET'&&u.pathname==='/api/market-status'){
  const j=await upstream('/state');
