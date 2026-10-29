@@ -91,4 +91,26 @@ $('chain').onclick=async()=>{try{
  $('status').textContent=lastContracts.length+' contracts • Retrieved '+quoteTime(j.checkedAt)+' • Screening is not a trade recommendation';
 }catch(e){$('status').textContent=e.message}};
 
-$('ask').onclick=()=>{$('answer').textContent='AI assistant backend is not yet configured. No live analysis has been performed.'};
+$('ask').onclick=async()=>{
+ const question=$('question').value.trim();if(!question)return;
+ $('answer').textContent='Researching…';$('ask').disabled=true;
+ try{const j=await api('/api/ask',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({question})});$('answer').textContent=j.answer||'No answer available'}
+ catch(e){$('answer').textContent=e.message}
+ finally{$('ask').disabled=false}
+};
+$('scan-watchlist').onclick=async()=>{
+ $('scanner-status').textContent='Loading Alpaca watchlist…';$('scan-watchlist').disabled=true;
+ try{
+  const j=await api('/api/scanner');
+  const quotes=j.quotes||[];
+  $('scanner-results').replaceChildren(...quotes.map(q=>{
+   const tr=document.createElement('tr');
+   const pct=Number(q.changePercent);
+   const values=[q.symbol,q.unavailable?'Unavailable':money(q.price),Number.isFinite(pct)?(pct>=0?'+':'')+pct.toFixed(2)+'%':'—',quoteDate(q.asOf)];
+   for(const v of values){const td=document.createElement('td');td.textContent=String(v??'—');tr.append(td)}
+   return tr;
+  }));
+  $('scanner-status').textContent=quotes.length+' tickers • Retrieved '+quoteDate(j.checkedAt)+' • Quotes may be stale outside market hours';
+ }catch(e){$('scanner-status').textContent=e.message}
+ finally{$('scan-watchlist').disabled=false}
+};
