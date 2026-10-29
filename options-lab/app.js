@@ -220,6 +220,19 @@ async function refreshMonitor(){
    }
   }
   notifiedWatchIds=new Set(events.map(c=>c.id+'-'+c.checkedAt));monitorInitialized=true;
+  // Opt-in local paper journal: indicative fills at quoted ask, never actual executions.
+  if(localStorage.getItem('olab-auto-paper-enabled')==='true'){
+   const rows=journalRead();
+   let changed=false;
+   for(const c of state.confirmed||[]){
+    const id='auto-'+c.id+'-'+c.checkedAt.slice(0,10);
+    if(rows.some(r=>r.id===id))continue;
+    if(!Number.isFinite(c.ask)||c.ask<=0||c.ask*100>1000)continue;
+    rows.unshift({id,symbol:c.symbol,side:c.side,strike:c.strike,expiry:c.expiry,entry:c.ask,createdAt:c.checkedAt,auto:true,entryAssumption:'Ask quote, hypothetical; no fill verified'});
+    changed=true;
+   }
+   if(changed)journalWrite(rows);
+  }
   const box=$('monitor-results');box.replaceChildren();
   for(const c of state.candidates||[]){
    const p=document.createElement('p');p.className='muted';
@@ -229,3 +242,8 @@ async function refreshMonitor(){
  }catch(e){$('monitor-status').textContent='Monitor unavailable: '+e.message}
 }
 refreshMonitor();setInterval(refreshMonitor,60000);
+
+const autoPaperButton=$('auto-paper-toggle');
+function refreshAutoPaperButton(){autoPaperButton.textContent=localStorage.getItem('olab-auto-paper-enabled')==='true'?'Auto paper tracking: ON':'Auto paper tracking: OFF'}
+autoPaperButton.onclick=()=>{const on=localStorage.getItem('olab-auto-paper-enabled')==='true';localStorage.setItem('olab-auto-paper-enabled',String(!on));refreshAutoPaperButton()};
+refreshAutoPaperButton();
