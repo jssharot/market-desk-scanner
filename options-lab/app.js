@@ -215,7 +215,7 @@ async function refreshMonitor(){
    for(const c of events){
     const id=c.id+'-'+c.checkedAt;
     if(!notifiedWatchIds.has(id)&&Date.now()-Date.parse(c.checkedAt)<120000){
-     new Notification('Options Lab: watch candidate',{body:c.symbol+' '+c.side.toUpperCase()+' '+c.strike+' '+displayDate(c.expiry)+' — watch only, not a buy signal'});
+     new Notification('Options Lab: watch candidate',{body:c.symbol+' '+c.side.toUpperCase()+' '+c.strike+' '+displayDate(c.expiry)+' — intraday breakout watch, not a buy signal'});
     }
    }
   }
@@ -223,7 +223,7 @@ async function refreshMonitor(){
   const box=$('monitor-results');box.replaceChildren();
   for(const c of state.candidates||[]){
    const p=document.createElement('p');p.className='muted';
-   p.textContent=c.symbol+' '+c.side.toUpperCase()+' '+c.strike+' '+displayDate(c.expiry)+' • '+money(c.premiumDollars)+'/contract • '+Number(c.changePercent).toFixed(2)+'% day • WATCH ONLY (no verified entry/stop/target)';
+   p.textContent=c.symbol+' '+c.side.toUpperCase()+' '+c.strike+' '+displayDate(c.expiry)+' • '+money(c.premiumDollars)+'/contract • '+Number(c.changePercent).toFixed(2)+'% day • Breakout '+money(c.breakoutLevel)+' • Stock stop '+money(c.stopLevel)+' • Stock target '+money(c.targetLevel)+' • Volume '+c.volumeRatio+'x • WATCH ONLY';
    box.append(p);
   }
  }catch(e){$('monitor-status').textContent='Monitor unavailable: '+e.message}
