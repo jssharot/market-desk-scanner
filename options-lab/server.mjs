@@ -34,13 +34,27 @@ async function backgroundScan(){
     const eligible=(chain.contracts||[]).map(c=>({...c,screen:screenContract({...c,expiry:dates[0]})})).filter(c=>c.screen.eligible&&Math.abs(c.strike-stock.price)/stock.price<=0.04).sort((a,b)=>Math.abs(a.strike-stock.price)-Math.abs(b.strike-stock.price)||a.screen.spreadPct-b.screen.spreadPct);
     if(!eligible.length)return null;
     const c=eligible[0];
-    return {id:stock.symbol+'-'+dates[0]+'-'+side+'-'+c.strike,symbol:stock.symbol,side,expiry:dates[0],strike:c.strike,ask:c.ask,bid:c.bid,underlying:stock.price,changePercent:stock.changePercent,spreadPct:c.screen.spreadPct,premiumDollars:c.screen.premiumDollars,quoteTime:c.quoteTime,checkedAt,classification:'WATCH_ONLY',reason:'Daily direction and liquidity match. Intraday breakout, catalyst, entry, stop and target NOT verified.'};
+    const barsUrl=new URL('/bars',base);barsUrl.searchParams.set('symbol',stock.symbol);barsUrl.searchParams.set('range','1D');
+    const intraday=await upstream(barsUrl.pathname+barsUrl.search);
+    const bars=(intraday.bars||[]).filter(b=>Number.isFinite(b.h)&&Number.isFinite(b.l)&&Number.isFinite(b.c));
+    const previous=bars.slice(-13,-1);
+    const last=bars.at(-1);
+    if(previous.length<8||!last)return null;
+    const recentHigh=Math.max(...previous.map(b=>b.h)),recentLow=Math.min(...previous.map(b=>b.l));
+    const isBreakout=side==='call'?last.c>recentHigh:last.c<recentLow;
+    const volumeAverage=previous.reduce((n,b)=>n+(Number(b.v)||0),0)/previous.length;
+    const volumeConfirmed=volumeAverage>0&&Number(last.v)>=volumeAverage*1.3;
+    if(!isBreakout||!volumeConfirmed)return null;
+    const range=Math.max(0.01,recentHigh-recentLow);
+    const stopLevel=side==='call'?Number((last.c-range*.5).toFixed(2)):Number((last.c+range*.5).toFixed(2));
+    const targetLevel=side==='call'?Number((last.c+range).toFixed(2)):Number((last.c-range).toFixed(2));
+    return {id:stock.symbol+'-'+dates[0]+'-'+side+'-'+c.strike,symbol:stock.symbol,side,expiry:dates[0],strike:c.strike,ask:c.ask,bid:c.bid,underlying:stock.price,changePercent:stock.changePercent,spreadPct:c.screen.spreadPct,premiumDollars:c.screen.premiumDollars,quoteTime:c.quoteTime,checkedAt,classification:'BREAKOUT_WATCH',breakoutLevel:side==='call'?recentHigh:recentLow,stopLevel,targetLevel,volumeRatio:Number((Number(last.v)/volumeAverage).toFixed(2)),barTime:last.t,reason:'Intraday bar breakout with 1.3x recent volume. Stock-based stop/target are illustrative, not option premium stop/target; no catalyst verification.'};
    }catch{return null}
   }));
   const current=results.filter(Boolean);
   const prior=new Map(scanState.priorCandidates.map(c=>[c.id,c]));
   const confirmed=current.filter(c=>prior.has(c.id)&&Math.sign(prior.get(c.id).changePercent)===Math.sign(c.changePercent)&&Math.abs(c.changePercent)>=Math.abs(prior.get(c.id).changePercent));
-  scanState.confirmed=confirmed.map(c=>({...c,classification:'CONFIRMED_WATCH',reason:'Two consecutive scans show consistent daily direction and fresh liquid option quotes; no breakout or risk/reward validation.'}));
+  scanState.confirmed=confirmed.map(c=>({...c,classification:'CONFIRMED_BREAKOUT_WATCH',reason:'Intraday breakout and volume condition persisted over two scans. Still a research alert, not a verified executable entry or guarantee.'}));
   scanState.candidates=current;scanState.priorCandidates=current;
   for(const c of scanState.confirmed){
    const last=scanState.alerts.find(a=>a.id===c.id&&Date.now()-Date.parse(a.checkedAt)<3600000);
@@ -60,7 +74,7 @@ if(!access)return send(res,503,{error:'Access not configured'});
 if(req.headers['x-options-lab-key']!==access)return send(res,401,{error:'Unauthorized'});
 try{
 if(req.method==='GET'&&u.pathname==='/api/monitor'){
- return send(res,200,{...scanState,notice:'Watch-only signals with two-scan confirmation. No actionable buy alerts, trade execution, validated breakouts or persistent paper fills. Scan state resets when server restarts.'});
+ return send(res,200,{...scanState,notice:'Intraday breakout and volume filters with two-scan confirmation. No live trade execution, guaranteed fills, persistent paper fills or closed-app push. Scan state resets when server restarts.'});
 }
 if(req.method==='GET'&&u.pathname==='/api/scanner'){
  const active=await upstream('/most-active');
