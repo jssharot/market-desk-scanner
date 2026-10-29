@@ -4,7 +4,7 @@ services:
     runtime: node
     plan: starter
     region: virginia
-    buildCommand: node --test scanner/engine.test.mjs
+    buildCommand: npm test
     startCommand: node scanner/service.mjs
     healthCheckPath: /health
     numInstances: 1
