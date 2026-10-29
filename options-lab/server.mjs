@@ -8,12 +8,50 @@ function send(res,status,data){res.writeHead(status,{'content-type':'application
 async function upstream(path){if(!secret)throw Error('Market Desk backend not configured');const r=await fetch(new URL(path,base),{headers:{Authorization:'Bearer '+secret},signal:AbortSignal.timeout(12000)});if(!r.ok)throw Error('Market Desk backend error '+r.status);return r.json()}
 function symbol(s){if(!/^[A-Z]{1,5}$/.test(s))throw Error('Invalid symbol');return s}
 function expiry(s){if(!/^\d{4}-\d{2}-\d{2}$/.test(s))throw Error('Invalid expiry');return s}
+const scanState={lastRun:null,lastError:null,candidates:[],running:false,history:[]};
+function easternNow(){const parts=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',weekday:'short',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date());const x=Object.fromEntries(parts.map(p=>[p.type,p.value]));return {weekday:x.weekday,minutes:Number(x.hour)*60+Number(x.minute)}}
+async function backgroundScan(){
+ if(scanState.running)return;
+ scanState.running=true;
+ try{
+  const active=await upstream('/most-active');
+  const symbols=[...new Set((active.stocks||[]).filter(x=>x.optionsEligible===true).map(x=>x.symbol))].slice(0,20);
+  if(!symbols.length)throw Error('No optionable candidates');
+  const qs=new URL('/quotes',base);qs.searchParams.set('symbols',symbols.join(','));
+  const snapshots=await upstream(qs.pathname+qs.search);
+  const stocks=(snapshots.quotes||[]).filter(x=>!x.unavailable&&Number.isFinite(x.price)&&Number.isFinite(x.changePercent)&&Math.abs(x.changePercent)>=2).sort((a,b)=>Math.abs(b.changePercent)-Math.abs(a.changePercent)).slice(0,5);
+  const checkedAt=new Date().toISOString();
+  const results=await Promise.all(stocks.map(async stock=>{
+   try{
+    const e=new URL('/expirations',base);e.searchParams.set('symbol',stock.symbol);
+    const ex=await upstream(e.pathname+e.search);
+    const today=new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+    const dates=(ex.expirations||[]).filter(d=>{const diff=(Date.parse(d+'T12:00:00Z')-Date.parse(today+'T12:00:00Z'))/86400000;return diff>=0&&diff<=10});
+    if(!dates.length)return null;
+    const side=stock.changePercent>0?'call':'put';
+    const target=new URL('/chain',base);Object.entries({symbol:stock.symbol,expiry:dates[0],side}).forEach(([k,v])=>target.searchParams.set(k,v));
+    const chain=await upstream(target.pathname+target.search);
+    const eligible=(chain.contracts||[]).map(c=>({...c,screen:screenContract({...c,expiry:dates[0]})})).filter(c=>c.screen.eligible&&Math.abs(c.strike-stock.price)/stock.price<=0.04).sort((a,b)=>Math.abs(a.strike-stock.price)-Math.abs(b.strike-stock.price)||a.screen.spreadPct-b.screen.spreadPct);
+    if(!eligible.length)return null;
+    const c=eligible[0];
+    return {id:stock.symbol+'-'+dates[0]+'-'+side+'-'+c.strike,symbol:stock.symbol,side,expiry:dates[0],strike:c.strike,ask:c.ask,bid:c.bid,underlying:stock.price,changePercent:stock.changePercent,spreadPct:c.screen.spreadPct,premiumDollars:c.screen.premiumDollars,quoteTime:c.quoteTime,checkedAt,classification:'WATCH_ONLY',reason:'Daily direction and liquidity match. Intraday breakout, catalyst, entry, stop and target NOT verified.'};
+   }catch{return null}
+  }));
+  scanState.candidates=results.filter(Boolean);scanState.lastRun=checkedAt;scanState.lastError=null;
+  scanState.history.unshift({checkedAt,candidates:scanState.candidates.length});scanState.history=scanState.history.slice(0,100);
+ }catch(e){scanState.lastError=e.message}
+ finally{scanState.running=false}
+}
+setInterval(()=>{const t=easternNow();if(['Mon','Tue','Wed','Thu','Fri'].includes(t.weekday)&&t.minutes>=570&&t.minutes<=960)void backgroundScan()},300000).unref();
 createServer(async(req,res)=>{const u=new URL(req.url,'http://localhost');
 if(u.pathname==='/health')return send(res,200,{ok:true,configured:!!secret&&!!access});
 if(req.method==='GET'&&['/','/index.html','/app.js'].includes(u.pathname)){res.writeHead(200,{'content-type':u.pathname==='/app.js'?'text/javascript':'text/html','cache-control':'no-store'});return res.end(await readFile(new URL(u.pathname==='/app.js'?'./app.js':'./index.html',import.meta.url)))}
 if(!access)return send(res,503,{error:'Access not configured'});
 if(req.headers['x-options-lab-key']!==access)return send(res,401,{error:'Unauthorized'});
 try{
+if(req.method==='GET'&&u.pathname==='/api/monitor'){
+ return send(res,200,{...scanState,notice:'Watch-only signals. No push alerts, trade execution, validated breakout signals or persistent paper fills. Scan state resets when server restarts.'});
+}
 if(req.method==='GET'&&u.pathname==='/api/scanner'){
  const active=await upstream('/most-active');
  const symbols=[...new Set((active.stocks||[]).filter(x=>x.optionsEligible!==false).map(x=>x.symbol))].slice(0,20);
