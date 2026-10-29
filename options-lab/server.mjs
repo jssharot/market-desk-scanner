@@ -58,7 +58,18 @@ if(req.method==='POST'&&u.pathname==='/api/ask'){
   }catch{marketContext.errors.push(ticker+': expirations unavailable')}
  }
  const ai=await fetch('https://api.openai.com/v1/responses',{method:'POST',headers:{Authorization:'Bearer '+aiKey,'Content-Type':'application/json'},body:JSON.stringify({model:process.env.OPENAI_MODEL||'gpt-4.1-mini',instructions:'You are the Options Lab research assistant. Use only the supplied timestamped Alpaca stock and OPRA option data for price claims. Explain whether quotes are stale and do not recommend trades based on stale quotes. If no eligible contracts, explain why using candidate screen.reasons; distinguish historical last quotes from actionable current quotes. Never tell the user to provide option chain data when it was retrieved, and never claim no chain data if a chain was retrieved. Never invent live quotes, option chain data, trading signals, account balances, fills, or positions. If data is missing say so. Do not claim to execute trades. Keep responses concise and practical, distinguish research from advice.',input:'Question: '+question+'\\nMarket context: '+JSON.stringify(marketContext),max_output_tokens:650}),signal:AbortSignal.timeout(25000)});
- if(!ai.ok)return send(res,502,{error:'AI provider returned '+ai.status});
+ if(!ai.ok){
+  let detail={};try{detail=await ai.json()}catch{}
+  const code=String(detail?.error?.code||'');
+  const type=String(detail?.error?.type||'');
+  const retryAfter=ai.headers.get('retry-after');
+  if(ai.status===429){
+   const quota=code==='insufficient_quota'||type==='insufficient_quota';
+   return send(res,quota?503:429,{error:quota?'OpenAI API quota exhausted. Check API billing, available credits and project spending limits.':'OpenAI API rate limit reached. Wait briefly before retrying; if it persists, check your project rate limits.',code:code||type||'rate_limit',...(retryAfter?{retryAfter}: {})});
+  }
+  if(ai.status===401)return send(res,502,{error:'OpenAI rejected the API key. Check OPENAI_API_KEY in Render.'});
+  return send(res,502,{error:'OpenAI request failed ('+ai.status+').',code:code||type||'provider_error'});
+ }
  const j=await ai.json();
  const answer=j.output_text||j.output?.flatMap(x=>x.content||[]).filter(x=>x.type==='output_text').map(x=>x.text).join('\\n')||'No answer available';
  return send(res,200,{answer,marketCheckedAt:marketContext.checkedAt||null,marketSources:marketContext.stocks.map(x=>x.source).concat(marketContext.options.map(x=>x.source)),dataWarnings:marketContext.errors});
