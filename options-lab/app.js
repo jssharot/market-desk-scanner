@@ -91,19 +91,44 @@ $('chain').onclick=async()=>{try{
  $('status').textContent=lastContracts.length+' contracts • Retrieved '+quoteTime(j.checkedAt)+' • Screening is not a trade recommendation';
 }catch(e){$('status').textContent=e.message}};
 
+let watchlistRows=[],watchlistSort={key:'changePercent',direction:'desc'};
+function renderWatchlist(){
+ const key=watchlistSort.key,mult=watchlistSort.direction==='asc'?1:-1;
+ const rows=[...watchlistRows].sort((a,b)=>{
+  const x=a[key],y=b[key];
+  if(key==='symbol')return mult*String(x||'').localeCompare(String(y||''));
+  if(key==='asOf')return mult*((Date.parse(x)||0)-(Date.parse(y)||0));
+  return mult*((Number(x)||0)-(Number(y)||0));
+ });
+ $('scanner-results').replaceChildren(...rows.map(q=>{
+  const tr=document.createElement('tr');
+  const ticker=document.createElement('td');
+  const sym=document.createElement('span');sym.className='watch-symbol';sym.textContent=q.symbol||'—';
+  const company=document.createElement('small');company.className='company-name';company.textContent=q.name&&q.name!==q.symbol?q.name:'';
+  ticker.append(sym,company);tr.append(ticker);
+  const pct=Number(q.changePercent);
+  const values=[q.unavailable?'Unavailable':money(q.price),Number.isFinite(pct)?(pct>=0?'+':'')+pct.toFixed(2)+'%':'—',quoteDate(q.asOf)];
+  for(const v of values){const td=document.createElement('td');td.textContent=String(v??'—');tr.append(td)}
+  return tr;
+ }));
+ document.querySelectorAll('.sort-heading').forEach(b=>{
+  const active=b.dataset.sort===key;
+  b.querySelector('.sort-arrow').textContent=active?(watchlistSort.direction==='asc'?'▲':'▼'):'↕';
+  b.setAttribute('aria-sort',active?(watchlistSort.direction==='asc'?'ascending':'descending'):'none');
+ });
+}
+document.querySelectorAll('.sort-heading').forEach(b=>b.addEventListener('click',()=>{
+ const key=b.dataset.sort;
+ watchlistSort={key,direction:watchlistSort.key===key?(watchlistSort.direction==='asc'?'desc':'asc'):(key==='symbol'?'asc':'desc')};
+ renderWatchlist();
+}));
 $('scan-watchlist').onclick=async()=>{
  $('scanner-status').textContent='Loading Alpaca watchlist…';$('scan-watchlist').disabled=true;
  try{
   const j=await api('/api/scanner');
-  const quotes=j.quotes||[];
-  $('scanner-results').replaceChildren(...quotes.map(q=>{
-   const tr=document.createElement('tr');
-   const pct=Number(q.changePercent);
-   const values=[q.symbol,q.unavailable?'Unavailable':money(q.price),Number.isFinite(pct)?(pct>=0?'+':'')+pct.toFixed(2)+'%':'—',quoteDate(q.asOf)];
-   for(const v of values){const td=document.createElement('td');td.textContent=String(v??'—');tr.append(td)}
-   return tr;
-  }));
-  $('scanner-status').textContent=quotes.length+' tickers • Retrieved '+quoteDate(j.checkedAt)+' • Quotes may be stale outside market hours';
+  watchlistRows=j.quotes||[];
+  renderWatchlist();
+  $('scanner-status').textContent=watchlistRows.length+' tickers • Retrieved '+quoteDate(j.checkedAt)+' • Quotes may be stale outside market hours';
  }catch(e){$('scanner-status').textContent=e.message}
  finally{$('scan-watchlist').disabled=false}
 };
