@@ -137,8 +137,8 @@ function journalRead(){try{return JSON.parse(localStorage.getItem(journalKey)||'
 function journalWrite(rows){localStorage.setItem(journalKey,JSON.stringify(rows));renderJournal()}
 function renderJournal(){
  const rows=journalRead(),closed=rows.filter(x=>Number.isFinite(x.exit));
- const pnl=closed.reduce((n,x)=>n+(x.exit-x.entry)*100,0);
- $('journal-stats').textContent=rows.length+' tracked • '+closed.length+' closed • '+(closed.length?(100*closed.filter(x=>x.exit>x.entry).length/closed.length).toFixed(0)+'% win rate • ':'')+'Realized P/L '+(pnl>=0?'+':'')+money(pnl);
+ const pnl=closed.reduce((n,x)=>n+(x.exit-x.entry)*100,0);const average=closed.length?pnl/closed.length:0;let equity=0,peak=0,drawdown=0;for(const x of [...closed].sort((a,b)=>Date.parse(a.closedAt||a.createdAt)-Date.parse(b.closedAt||b.createdAt))){equity+=(x.exit-x.entry)*100;peak=Math.max(peak,equity);drawdown=Math.max(drawdown,peak-equity)}
+ $('journal-stats').textContent=rows.length+' tracked • '+closed.length+' closed • '+(closed.length?(100*closed.filter(x=>x.exit>x.entry).length/closed.length).toFixed(0)+'% win rate • ':'')+'Realized P/L '+(pnl>=0?'+':'')+money(pnl)+' • Avg/trade '+money(average)+' • Max drawdown '+money(drawdown);
  $('journal-rows').replaceChildren(...rows.map(x=>{
   const tr=document.createElement('tr');
   for(const value of [x.symbol+' '+x.expiry+' '+x.side+' '+x.strike,money(x.entry),Number.isFinite(x.exit)?money(x.exit):'Open',Number.isFinite(x.exit)?((x.exit/x.entry-1)*100).toFixed(1)+'%':'—']){
@@ -149,7 +149,7 @@ function renderJournal(){
   b.onclick=()=>{
    const all=journalRead(),index=all.findIndex(y=>y.id===x.id);if(index<0)return;
    if(Number.isFinite(x.exit)){if(!confirm('Remove this paper trade?'))return;all.splice(index,1)}
-   else{const value=prompt('Paper exit option premium per share (e.g. 2.50):');if(value===null)return;const exit=Number(value);if(!Number.isFinite(exit)||exit<0){alert('Enter a valid premium');return}all[index].exit=exit}
+   else{const value=prompt('Paper exit option premium per share (e.g. 2.50):');if(value===null)return;const exit=Number(value);if(!Number.isFinite(exit)||exit<0){alert('Enter a valid premium');return}all[index].exit=exit;all[index].closedAt=new Date().toISOString();all[index].exitReason='Manual'}
    journalWrite(all);
   };
   td.append(b);tr.append(td);return tr;
@@ -247,3 +247,35 @@ const autoPaperButton=$('auto-paper-toggle');
 function refreshAutoPaperButton(){autoPaperButton.textContent=localStorage.getItem('olab-auto-paper-enabled')==='true'?'Auto paper tracking: ON':'Auto paper tracking: OFF'}
 autoPaperButton.onclick=()=>{const on=localStorage.getItem('olab-auto-paper-enabled')==='true';localStorage.setItem('olab-auto-paper-enabled',String(!on));refreshAutoPaperButton()};
 refreshAutoPaperButton();
+
+let paperExitRunning=false;
+async function checkPaperExits(){
+ if(paperExitRunning||localStorage.getItem('olab-auto-exits-enabled')!=='true')return;
+ const rows=journalRead(),open=rows.filter(x=>x.auto&&!Number.isFinite(x.exit)).slice(0,15);
+ if(!open.length)return;
+ paperExitRunning=true;
+ let changed=false;
+ try{
+  for(const trade of open){
+   try{
+    const params=new URLSearchParams({symbol:trade.symbol,side:trade.side,expiry:trade.expiry,strike:String(trade.strike)});
+    const quote=await api('/api/paper-quote?'+params);
+    if(!quote.available)continue;
+    const bid=Number(quote.bid),entry=Number(trade.entry);
+    if(!Number.isFinite(bid)||!Number.isFinite(entry)||entry<=0)continue;
+    const returnPct=(bid/entry-1)*100;
+    const reason=returnPct<=-30?'Paper stop (-30%)':returnPct>=50?'Paper target (+50%)':null;
+    if(!reason)continue;
+    const target=rows.find(x=>x.id===trade.id);
+    if(!target||Number.isFinite(target.exit))continue;
+    target.exit=bid;target.closedAt=new Date().toISOString();target.exitReason=reason;target.exitQuoteTime=quote.quoteTime;target.exitAssumption='Bid quote, hypothetical; no execution verified';changed=true;
+   }catch{}
+  }
+  if(changed)journalWrite(rows);
+ }finally{paperExitRunning=false}
+}
+const autoExitsButton=$('auto-exits-toggle');
+function updateAutoExitsButton(){autoExitsButton.textContent=localStorage.getItem('olab-auto-exits-enabled')==='true'?'Auto paper exits: ON':'Auto paper exits: OFF'}
+autoExitsButton.onclick=()=>{localStorage.setItem('olab-auto-exits-enabled',String(localStorage.getItem('olab-auto-exits-enabled')!=='true'));updateAutoExitsButton();void checkPaperExits()};
+updateAutoExitsButton();
+void checkPaperExits();setInterval(checkPaperExits,60000);
