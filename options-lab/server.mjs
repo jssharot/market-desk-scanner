@@ -28,6 +28,29 @@ if(req.method==='GET'&&u.pathname==='/api/scanner'){
  })).sort((a,b)=>b.volatilityProxyPct-a.volatilityProxyPct);
  return send(res,200,{quotes:ranked,checkedAt:snapshots.checkedAt||active.checkedAt||null,source:'Alpaca SIP most-active + stock snapshots',note:'Dynamic candidates ranked by absolute daily % change among Alpaca top-volume stocks. Not a full-market realized-volatility ranking or a validated options signal. Updates when refreshed; may reflect prior session outside market hours.'});
 }
+if(req.method==='GET'&&u.pathname==='/api/opportunities'){
+ const active=await upstream('/most-active');
+ const symbols=[...new Set((active.stocks||[]).filter(x=>x.optionsEligible===true).map(x=>x.symbol))].slice(0,12);
+ if(!symbols.length)return send(res,200,{candidates:[],checkedAt:new Date().toISOString(),note:'No options-enabled high-volume candidates returned.'});
+ const qs=new URL('/quotes',base);qs.searchParams.set('symbols',symbols.join(','));
+ const snapshots=await upstream(qs.pathname+qs.search);
+ const movers=(snapshots.quotes||[]).filter(x=>!x.unavailable&&Number.isFinite(x.price)&&Number.isFinite(x.changePercent)).sort((a,b)=>Math.abs(b.changePercent)-Math.abs(a.changePercent)).slice(0,5);
+ const results=await Promise.all(movers.map(async stock=>{
+  try{
+   const e=new URL('/expirations',base);e.searchParams.set('symbol',stock.symbol);
+   const ex=await upstream(e.pathname+e.search);
+   const dates=ex.expirations||[];
+   const now=Date.now();
+   const today=new Date(now).toISOString().slice(0,10);
+   const expiryDate=dates.find(d=>{const days=(Date.parse(d+'T12:00:00Z')-Date.parse(today+'T12:00:00Z'))/86400000;return days>=0&&days<=10});
+   if(!expiryDate)return {symbol:stock.symbol,changePercent:stock.changePercent,reason:'No expiration within 10 days',contracts:[]};
+   const chains=await Promise.all(['call','put'].map(async side=>{const c=new URL('/chain',base);Object.entries({symbol:stock.symbol,expiry:expiryDate,side}).forEach(([k,v])=>c.searchParams.set(k,v));try{return {side,data:await upstream(c.pathname+c.search)}}catch{return {side,data:{contracts:[]}}}}));
+   const contracts=chains.flatMap(({side,data})=>(data.contracts||[]).map(c=>({...c,side,expiry:expiryDate,screen:screenContract({...c,expiry:expiryDate})}))).filter(c=>c.screen.eligible).sort((a,b)=>a.screen.spreadPct-b.screen.spreadPct||Math.abs(a.strike-stock.price)-Math.abs(b.strike-stock.price)).slice(0,4);
+   return {symbol:stock.symbol,price:stock.price,changePercent:stock.changePercent,expiry:expiryDate,contracts};
+  }catch(e){return {symbol:stock.symbol,changePercent:stock.changePercent,reason:'Data unavailable',contracts:[]}}
+ }));
+ return send(res,200,{candidates:results,checkedAt:new Date().toISOString(),note:'Live liquidity-screened candidates, NOT validated directional signals or trade recommendations. Quotes may become stale immediately; recheck before acting.'});
+}
 if(req.method==='GET'&&u.pathname==='/api/market-status'){
  const j=await upstream('/state');
  const session=j.session||{};
