@@ -8,7 +8,7 @@ function send(res,status,data){res.writeHead(status,{'content-type':'application
 async function upstream(path){if(!secret)throw Error('Market Desk backend not configured');const r=await fetch(new URL(path,base),{headers:{Authorization:'Bearer '+secret},signal:AbortSignal.timeout(12000)});if(!r.ok)throw Error('Market Desk backend error '+r.status);return r.json()}
 function symbol(s){if(!/^[A-Z]{1,5}$/.test(s))throw Error('Invalid symbol');return s}
 function expiry(s){if(!/^\d{4}-\d{2}-\d{2}$/.test(s))throw Error('Invalid expiry');return s}
-const scanState={lastRun:null,lastError:null,candidates:[],running:false,history:[]};
+const scanState={lastRun:null,lastError:null,candidates:[],running:false,history:[],confirmed:[],priorCandidates:[],alerts:[]};
 function easternNow(){const parts=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',weekday:'short',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date());const x=Object.fromEntries(parts.map(p=>[p.type,p.value]));return {weekday:x.weekday,minutes:Number(x.hour)*60+Number(x.minute)}}
 async function backgroundScan(){
  if(scanState.running)return;
@@ -37,7 +37,17 @@ async function backgroundScan(){
     return {id:stock.symbol+'-'+dates[0]+'-'+side+'-'+c.strike,symbol:stock.symbol,side,expiry:dates[0],strike:c.strike,ask:c.ask,bid:c.bid,underlying:stock.price,changePercent:stock.changePercent,spreadPct:c.screen.spreadPct,premiumDollars:c.screen.premiumDollars,quoteTime:c.quoteTime,checkedAt,classification:'WATCH_ONLY',reason:'Daily direction and liquidity match. Intraday breakout, catalyst, entry, stop and target NOT verified.'};
    }catch{return null}
   }));
-  scanState.candidates=results.filter(Boolean);scanState.lastRun=checkedAt;scanState.lastError=null;
+  const current=results.filter(Boolean);
+  const prior=new Map(scanState.priorCandidates.map(c=>[c.id,c]));
+  const confirmed=current.filter(c=>prior.has(c.id)&&Math.sign(prior.get(c.id).changePercent)===Math.sign(c.changePercent)&&Math.abs(c.changePercent)>=Math.abs(prior.get(c.id).changePercent));
+  scanState.confirmed=confirmed.map(c=>({...c,classification:'CONFIRMED_WATCH',reason:'Two consecutive scans show consistent daily direction and fresh liquid option quotes; no breakout or risk/reward validation.'}));
+  scanState.candidates=current;scanState.priorCandidates=current;
+  for(const c of scanState.confirmed){
+   const last=scanState.alerts.find(a=>a.id===c.id&&Date.now()-Date.parse(a.checkedAt)<3600000);
+   if(!last)scanState.alerts.unshift(c);
+  }
+  scanState.alerts=scanState.alerts.slice(0,40);
+  scanState.lastRun=checkedAt;scanState.lastError=null;
   scanState.history.unshift({checkedAt,candidates:scanState.candidates.length});scanState.history=scanState.history.slice(0,100);
  }catch(e){scanState.lastError=e.message}
  finally{scanState.running=false}
@@ -50,7 +60,7 @@ if(!access)return send(res,503,{error:'Access not configured'});
 if(req.headers['x-options-lab-key']!==access)return send(res,401,{error:'Unauthorized'});
 try{
 if(req.method==='GET'&&u.pathname==='/api/monitor'){
- return send(res,200,{...scanState,notice:'Watch-only signals. No push alerts, trade execution, validated breakout signals or persistent paper fills. Scan state resets when server restarts.'});
+ return send(res,200,{...scanState,notice:'Watch-only signals with two-scan confirmation. No actionable buy alerts, trade execution, validated breakouts or persistent paper fills. Scan state resets when server restarts.'});
 }
 if(req.method==='GET'&&u.pathname==='/api/scanner'){
  const active=await upstream('/most-active');
