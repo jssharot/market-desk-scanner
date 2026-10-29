@@ -91,13 +91,6 @@ $('chain').onclick=async()=>{try{
  $('status').textContent=lastContracts.length+' contracts • Retrieved '+quoteTime(j.checkedAt)+' • Screening is not a trade recommendation';
 }catch(e){$('status').textContent=e.message}};
 
-$('ask').onclick=async()=>{
- const question=$('question').value.trim();if(!question)return;
- $('answer').textContent='Researching…';$('ask').disabled=true;
- try{const j=await api('/api/ask',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({question})});$('answer').textContent=j.answer||'No answer available'}
- catch(e){$('answer').textContent=e.message}
- finally{$('ask').disabled=false}
-};
 $('scan-watchlist').onclick=async()=>{
  $('scanner-status').textContent='Loading Alpaca watchlist…';$('scan-watchlist').disabled=true;
  try{
