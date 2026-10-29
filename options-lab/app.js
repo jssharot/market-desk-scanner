@@ -181,10 +181,26 @@ $('scan-options').onclick=async()=>{
  finally{$('scan-options').disabled=false}
 };
 
+let notifiedWatchIds=new Set(),monitorInitialized=false;
+$('notify-watch').onclick=async()=>{
+ if(!('Notification' in window)){$('notify-watch').textContent='Notifications unsupported';return}
+ const permission=await Notification.requestPermission();
+ $('notify-watch').textContent=permission==='granted'?'Watch notifications enabled':'Notifications not enabled';
+};
 async function refreshMonitor(){
  try{
   const state=await api('/api/monitor');
   $('monitor-status').textContent=(state.lastRun?'Last scan '+quoteDate(state.lastRun):'Waiting for first market-hours scan')+' • '+(state.candidates||[]).length+' watch-only candidates'+(state.running?' • scanning…':'')+(state.lastError?' • '+state.lastError:'');
+  const events=state.alerts||[];
+  if(monitorInitialized&&'Notification' in window&&Notification.permission==='granted'){
+   for(const c of events){
+    const id=c.id+'-'+c.checkedAt;
+    if(!notifiedWatchIds.has(id)&&Date.now()-Date.parse(c.checkedAt)<120000){
+     new Notification('Options Lab: watch candidate',{body:c.symbol+' '+c.side.toUpperCase()+' '+c.strike+' '+displayDate(c.expiry)+' — watch only, not a buy signal'});
+    }
+   }
+  }
+  notifiedWatchIds=new Set(events.map(c=>c.id+'-'+c.checkedAt));monitorInitialized=true;
   const box=$('monitor-results');box.replaceChildren();
   for(const c of state.candidates||[]){
    const p=document.createElement('p');p.className='muted';
