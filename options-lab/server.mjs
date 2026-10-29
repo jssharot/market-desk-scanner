@@ -19,6 +19,18 @@ if(req.method==='GET'&&u.pathname==='/api/market-status'){
  const session=j.session||{};
  return send(res,200,{session,checkedAt:j.lastCheck||null,source:'Market Desk / Alpaca exchange calendar',note:'Today session is exchange-calendar based; next trading day after a closure is estimated until verified by calendar.'});
 }
+if(req.method==='GET'&&u.pathname==='/api/ticker-search'){
+ const q=(u.searchParams.get('q')||'').trim().slice(0,60);
+ if(q.length<1)return send(res,200,{results:[]});
+ const target=new URL('/search',base);target.searchParams.set('q',q);
+ const j=await upstream(target.pathname+target.search);
+ return send(res,200,{results:(j.results||[]).slice(0,10)});
+}
+if(req.method==='GET'&&u.pathname==='/api/stock-quote'){
+ const target=new URL('/quotes',base);target.searchParams.set('symbols',symbol(u.searchParams.get('symbol')));
+ const j=await upstream(target.pathname+target.search);
+ return send(res,200,{quote:(j.quotes||[])[0]||null,checkedAt:j.checkedAt||null,source:j.source||'Alpaca SIP'});
+}
 if(req.method==='GET'&&u.pathname==='/api/expirations'){const q=new URL('/expirations',base);q.searchParams.set('symbol',symbol(u.searchParams.get('symbol')));return send(res,200,await upstream(q.pathname+q.search))}
 if(req.method==='GET'&&u.pathname==='/api/chain'){const sym=symbol(u.searchParams.get('symbol')),date=expiry(u.searchParams.get('expiry')),side=u.searchParams.get('side');if(!['call','put'].includes(side))throw Error('Invalid side');const q=new URL('/chain',base);for(const [k,v] of Object.entries({symbol:sym,expiry:date,side}))q.searchParams.set(k,v);const j=await upstream(q.pathname+q.search);return send(res,200,{...j,screened:(j.contracts||[]).map(c=>({...c,screen:screenContract({...c,expiry:date})}))})}
 return send(res,404,{error:'Not found'})
