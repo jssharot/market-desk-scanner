@@ -23,14 +23,16 @@ async function refreshMarketStatus(){
 }
 refreshMarketStatus();
 setInterval(refreshMarketStatus,60000);
-let selectedSymbol='SPY',searchTimer=null,searchSequence=0;
+let selectedSymbol='SPY',searchTimer=null,searchSequence=0,quoteSequence=0,loadSequence=0;
 const input=$('symbol'),suggestions=$('ticker-suggestions');
 const quoteDate=t=>{const ms=Date.parse(t||'');return Number.isFinite(ms)?new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',month:'2-digit',day:'2-digit',year:'numeric',hour:'numeric',minute:'2-digit',timeZoneName:'short'}).format(ms):'Unavailable'};
 function hideSuggestions(){suggestions.hidden=true;suggestions.replaceChildren()}
 async function showQuote(symbol){
+ const requestId=++quoteSequence;
  $('stock-quote').hidden=true;
  try{
   const j=await api('/api/stock-quote?symbol='+encodeURIComponent(symbol)),q=j.quote;
+  if(requestId!==quoteSequence||input.value.trim().toUpperCase()!==symbol)return;
   if(!q||q.unavailable||!Number.isFinite(q.price))return;
   $('stock-price').textContent=symbol+' '+money(q.price);
   const pct=Number(q.changePercent),change=Number(q.change);
@@ -38,10 +40,10 @@ async function showQuote(symbol){
   $('stock-change').className=Number.isFinite(pct)?(pct>=0?'positive':'negative'):'';
   $('stock-asof').textContent='As of '+quoteDate(q.asOf)+' · '+(q.stale?'Stale last trade · ':'')+(j.source||'Alpaca SIP');
   $('stock-quote').hidden=false;
- }catch(e){$('stock-quote').hidden=true}
+ }catch(e){if(requestId===quoteSequence)$('stock-quote').hidden=true}
 }
 input.addEventListener('input',()=>{
- const q=input.value.trim();selectedSymbol='';clearTimeout(searchTimer);const id=++searchSequence;hideSuggestions();
+ const q=input.value.trim();selectedSymbol='';++quoteSequence;++loadSequence;$('stock-quote').hidden=true;clearTimeout(searchTimer);const id=++searchSequence;hideSuggestions();
  if(!q)return;
  searchTimer=setTimeout(async()=>{
   try{
@@ -52,7 +54,7 @@ input.addEventListener('input',()=>{
     const b=document.createElement('button');b.type='button';b.setAttribute('role','option');
     const name=document.createElement('small');name.textContent=item.name||'';
     b.textContent=item.symbol;b.append(name);
-    b.onclick=()=>{selectedSymbol=item.symbol;input.value=item.symbol;hideSuggestions();$('expiry').replaceChildren();$('quotes').replaceChildren();$('stock-quote').hidden=true;showQuote(item.symbol)};
+    b.onclick=()=>{++quoteSequence;++loadSequence;selectedSymbol=item.symbol;input.value=item.symbol;hideSuggestions();$('expiry').replaceChildren();$('quotes').replaceChildren();$('stock-quote').hidden=true;showQuote(item.symbol)};
     return b;
    }));suggestions.hidden=!items.length;
   }catch(e){hideSuggestions()}
@@ -60,8 +62,8 @@ input.addEventListener('input',()=>{
 });
 input.addEventListener('keydown',e=>{if(e.key==='Escape')hideSuggestions();if(e.key==='Enter'&&!suggestions.hidden){const first=suggestions.querySelector('button');if(first){e.preventDefault();first.click()}}});
 document.addEventListener('click',e=>{if(!e.target.closest('.ticker-field'))hideSuggestions()});
-$('clear-research').onclick=()=>{clearTimeout(searchTimer);++searchSequence;selectedSymbol='';input.value='';$('expiry').replaceChildren();$('quotes').replaceChildren();lastContracts=[];hideSuggestions();$('stock-quote').hidden=true;$('status').textContent='';$('chain-count').textContent='';input.focus()};
-$('load').onclick=async()=>{try{const symbol=(selectedSymbol||$('symbol').value.trim().toUpperCase());if(!/^[A-Z]{1,5}$/.test(symbol))throw Error('Select a ticker from suggestions');input.value=symbol;hideSuggestions();showQuote(symbol);$('status').textContent='Loading…';const j=await api('/api/expirations?symbol='+encodeURIComponent(symbol));const today=Date.parse(new Date().toISOString().slice(0,10)+'T12:00:00Z');const ex=(j.expirations||[]).filter(x=>{const d=(Date.parse(x+'T12:00:00Z')-today)/86400000;return d>=0&&d<=10});$('expiry').replaceChildren(...ex.map(e=>new Option(displayDate(e),e)));$('status').textContent=ex.length+' short-term expirations';}catch(e){$('status').textContent=e.message}};
+$('clear-research').onclick=()=>{clearTimeout(searchTimer);++searchSequence;++quoteSequence;++loadSequence;selectedSymbol='';input.value='';$('expiry').replaceChildren();$('quotes').replaceChildren();lastContracts=[];hideSuggestions();$('stock-quote').hidden=true;$('stock-price').textContent='';$('stock-change').textContent='';$('stock-asof').textContent='';$('status').textContent='';$('chain-count').textContent='';input.focus()};
+$('load').onclick=async()=>{try{const symbol=(selectedSymbol||$('symbol').value.trim().toUpperCase());if(!/^[A-Z]{1,5}$/.test(symbol))throw Error('Select a ticker from suggestions');input.value=symbol;hideSuggestions();showQuote(symbol);const requestId=++loadSequence;$('status').textContent='Loading…';const j=await api('/api/expirations?symbol='+encodeURIComponent(symbol));if(requestId!==loadSequence)return;const today=Date.parse(new Date().toISOString().slice(0,10)+'T12:00:00Z');const ex=(j.expirations||[]).filter(x=>{const d=(Date.parse(x+'T12:00:00Z')-today)/86400000;return d>=0&&d<=10});$('expiry').replaceChildren(...ex.map(e=>new Option(displayDate(e),e)));$('status').textContent=ex.length+' short-term expirations';}catch(e){$('status').textContent=e.message}};
 let lastContracts=[];
 const money=n=>Number.isFinite(n)?new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:2}).format(n):'—';
 const quoteTime=t=>{const ms=Date.parse(t||'');return Number.isFinite(ms)?new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',month:'2-digit',day:'2-digit',year:'numeric',hour:'numeric',minute:'2-digit',second:'2-digit',timeZoneName:'short'}).format(ms):'Unavailable'};
