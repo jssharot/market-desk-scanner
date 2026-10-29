@@ -180,3 +180,17 @@ $('scan-options').onclick=async()=>{
  }catch(e){$('opportunities-status').textContent=e.message}
  finally{$('scan-options').disabled=false}
 };
+
+async function refreshMonitor(){
+ try{
+  const state=await api('/api/monitor');
+  $('monitor-status').textContent=(state.lastRun?'Last scan '+quoteDate(state.lastRun):'Waiting for first market-hours scan')+' • '+(state.candidates||[]).length+' watch-only candidates'+(state.running?' • scanning…':'')+(state.lastError?' • '+state.lastError:'');
+  const box=$('monitor-results');box.replaceChildren();
+  for(const c of state.candidates||[]){
+   const p=document.createElement('p');p.className='muted';
+   p.textContent=c.symbol+' '+c.side.toUpperCase()+' '+c.strike+' '+displayDate(c.expiry)+' • '+money(c.premiumDollars)+'/contract • '+Number(c.changePercent).toFixed(2)+'% day • WATCH ONLY (no verified entry/stop/target)';
+   box.append(p);
+  }
+ }catch(e){$('monitor-status').textContent='Monitor unavailable: '+e.message}
+}
+refreshMonitor();setInterval(refreshMonitor,60000);
