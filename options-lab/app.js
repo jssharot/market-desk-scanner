@@ -182,11 +182,27 @@ $('scan-options').onclick=async()=>{
 };
 
 let notifiedWatchIds=new Set(),monitorInitialized=false;
+const notifyPreferenceKey='olab-watch-notifications-enabled';
+function updateNotifyButton(){
+ const button=$('notify-watch');
+ if(!('Notification' in window)){button.textContent='Notifications unsupported';button.disabled=true;return}
+ const allowed=Notification.permission==='granted';
+ const wanted=localStorage.getItem(notifyPreferenceKey)==='true';
+ button.textContent=allowed&&wanted?'Watch notifications on':allowed?'Turn on watch notifications':Notification.permission==='denied'?'Notifications blocked in browser':'Enable watch notifications';
+ button.disabled=Notification.permission==='denied';
+}
 $('notify-watch').onclick=async()=>{
- if(!('Notification' in window)){$('notify-watch').textContent='Notifications unsupported';return}
- const permission=await Notification.requestPermission();
- $('notify-watch').textContent=permission==='granted'?'Watch notifications enabled':'Notifications not enabled';
+ if(!('Notification' in window))return;
+ const wanted=localStorage.getItem(notifyPreferenceKey)==='true';
+ if(Notification.permission==='granted'&&localStorage.getItem(notifyPreferenceKey)==='true'){
+  localStorage.setItem(notifyPreferenceKey,wanted?'false':'true');
+ }else{
+  const permission=await Notification.requestPermission();
+  if(permission==='granted')localStorage.setItem(notifyPreferenceKey,'true');
+ }
+ updateNotifyButton();
 };
+updateNotifyButton();
 async function refreshMonitor(){
  try{
   const state=await api('/api/monitor');
