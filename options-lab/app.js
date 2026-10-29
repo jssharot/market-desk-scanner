@@ -184,22 +184,25 @@ $('scan-options').onclick=async()=>{
 let notifiedWatchIds=new Set(),monitorInitialized=false;
 const notifyPreferenceKey='olab-watch-notifications-enabled';
 function updateNotifyButton(){
- const button=$('notify-watch');
- if(!('Notification' in window)){button.textContent='Notifications unsupported';button.disabled=true;return}
+ const button=$('notify-watch'),footer=$('notify-footer');
+ if(!('Notification' in window)){button.textContent='Notifications unsupported';button.disabled=true;footer.hidden=true;return}
  const allowed=Notification.permission==='granted';
  const wanted=localStorage.getItem(notifyPreferenceKey)==='true';
- button.textContent=allowed&&wanted?'Watch notifications on':allowed?'Turn on watch notifications':Notification.permission==='denied'?'Notifications blocked in browser':'Enable watch notifications';
+ button.hidden=allowed&&wanted;
+ button.textContent=allowed?'Enable watch notifications':Notification.permission==='denied'?'Notifications blocked in browser':'Enable watch notifications';
  button.disabled=Notification.permission==='denied';
+ footer.hidden=!allowed||!wanted;
+ footer.textContent='🔕 Pause alerts';
+ footer.title='Pause watch notifications on this device';
 }
 $('notify-watch').onclick=async()=>{
  if(!('Notification' in window))return;
- const wanted=localStorage.getItem(notifyPreferenceKey)==='true';
- if(Notification.permission==='granted'&&localStorage.getItem(notifyPreferenceKey)==='true'){
-  localStorage.setItem(notifyPreferenceKey,wanted?'false':'true');
- }else{
-  const permission=await Notification.requestPermission();
-  if(permission==='granted')localStorage.setItem(notifyPreferenceKey,'true');
- }
+ if(Notification.permission==='granted')localStorage.setItem(notifyPreferenceKey,'true');
+ else if(await Notification.requestPermission()==='granted')localStorage.setItem(notifyPreferenceKey,'true');
+ updateNotifyButton();
+};
+$('notify-footer').onclick=()=>{
+ localStorage.setItem(notifyPreferenceKey,'false');
  updateNotifyButton();
 };
 updateNotifyButton();
@@ -208,7 +211,7 @@ async function refreshMonitor(){
   const state=await api('/api/monitor');
   $('monitor-status').textContent=(state.lastRun?'Last scan '+quoteDate(state.lastRun):'Waiting for first market-hours scan')+' • '+(state.candidates||[]).length+' watch-only candidates'+(state.running?' • scanning…':'')+(state.lastError?' • '+state.lastError:'');
   const events=state.alerts||[];
-  if(monitorInitialized&&'Notification' in window&&Notification.permission==='granted'){
+  if(monitorInitialized&&'Notification' in window&&Notification.permission==='granted'&&localStorage.getItem(notifyPreferenceKey)==='true'){
    for(const c of events){
     const id=c.id+'-'+c.checkedAt;
     if(!notifiedWatchIds.has(id)&&Date.now()-Date.parse(c.checkedAt)<120000){
