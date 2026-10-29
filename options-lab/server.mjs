@@ -15,11 +15,18 @@ if(!access)return send(res,503,{error:'Access not configured'});
 if(req.headers['x-options-lab-key']!==access)return send(res,401,{error:'Unauthorized'});
 try{
 if(req.method==='GET'&&u.pathname==='/api/scanner'){
- const raw=(u.searchParams.get('symbols')||'SPY,QQQ,AAPL,MSFT,NVDA,META,TSLA').split(',').map(x=>x.trim().toUpperCase());
- const symbols=[...new Set(raw)].slice(0,10).map(symbol);
- const target=new URL('/quotes',base);target.searchParams.set('symbols',symbols.join(','));
- const j=await upstream(target.pathname+target.search);
- return send(res,200,{quotes:j.quotes||[],checkedAt:j.checkedAt||null,source:j.source||'Alpaca SIP',note:'Watchlist quote scanner only. These are not validated options trade signals.'});
+ const active=await upstream('/most-active');
+ const symbols=[...new Set((active.stocks||[]).filter(x=>x.optionsEligible!==false).map(x=>x.symbol))].slice(0,20);
+ const q=new URL('/quotes',base);q.searchParams.set('symbols',symbols.join(','));
+ const snapshots=symbols.length?await upstream(q.pathname+q.search):{quotes:[],checkedAt:null};
+ const bySymbol=new Map((active.stocks||[]).map(x=>[x.symbol,x]));
+ const ranked=(snapshots.quotes||[]).filter(x=>!x.unavailable&&Number.isFinite(x.changePercent)).map(x=>({
+  ...x,name:bySymbol.get(x.symbol)?.name||x.symbol,
+  volume:bySymbol.get(x.symbol)?.volume??x.volume??null,
+  optionsEligible:bySymbol.get(x.symbol)?.optionsEligible??null,
+  volatilityProxyPct:Math.abs(x.changePercent)
+ })).sort((a,b)=>b.volatilityProxyPct-a.volatilityProxyPct);
+ return send(res,200,{quotes:ranked,checkedAt:snapshots.checkedAt||active.checkedAt||null,source:'Alpaca SIP most-active + stock snapshots',note:'Dynamic candidates ranked by absolute daily % change among Alpaca top-volume stocks. Not a full-market realized-volatility ranking or a validated options signal. Updates when refreshed; may reflect prior session outside market hours.'});
 }
 if(req.method==='GET'&&u.pathname==='/api/market-status'){
  const j=await upstream('/state');
