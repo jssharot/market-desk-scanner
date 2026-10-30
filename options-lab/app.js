@@ -354,3 +354,19 @@ $('paper-sync').onclick=async()=>{
 let journalSyncTimer;
 function scheduleJournalSync(){clearTimeout(journalSyncTimer);journalSyncTimer=setTimeout(()=>{$('paper-sync').click()},900)}
 setTimeout(()=>{$('paper-sync').click()},2000);
+
+
+// Page navigation keeps existing panels mounted so live data and event handlers remain intact.
+const appPages=['research','scanner','monitor','opportunities','performance','paper','settings'];
+function showAppPage(name,historyMode='push'){
+ const page=appPages.includes(name)?name:'research';
+ for(const el of document.querySelectorAll('.app-page'))el.hidden=el.dataset.page!==page;
+ for(const button of document.querySelectorAll('[data-go]')){const active=button.dataset.go===page;button.classList.toggle('active',active);button.setAttribute('aria-current',active?'page':'false')}
+ if(historyMode==='push'&&location.hash!=='#'+page)history.pushState({page},'', '#'+page);
+ document.title=(document.querySelector('.app-nav button.active')?.textContent||'Options Lab')+' | Options Lab';
+ window.scrollTo({top:0,behavior:'instant'});
+}
+document.querySelectorAll('[data-go]').forEach(button=>button.addEventListener('click',()=>showAppPage(button.dataset.go)));
+window.addEventListener('popstate',()=>showAppPage(location.hash.slice(1),'none'));
+window.addEventListener('hashchange',()=>showAppPage(location.hash.slice(1),'none'));
+showAppPage(location.hash.slice(1),'replace');
