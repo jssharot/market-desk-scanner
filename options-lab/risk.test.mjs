@@ -60,3 +60,14 @@ test('higher momentum increases setup ranking without inventing volume',()=>{
 test('invalid quotes are rejected by setup ranking',()=>{
  assert.equal(scoreSetup({quoteScore:0,changePercent:8}).tier,'Rejected');
 });
+
+test('breakout alone with weak relative volume cannot be high conviction',()=>{
+ const result=scoreSetup({quoteScore:100,changePercent:6,volumeRatio:0.4,breakoutConfirmed:true});
+ assert.notEqual(result.confirmation,'technical-confirmed');
+ assert.ok(result.score<80);
+});
+test('strong breakout and sufficient relative volume can qualify as technically confirmed',()=>{
+ const result=scoreSetup({quoteScore:100,changePercent:6,volumeRatio:1.5,breakoutConfirmed:true});
+ assert.equal(result.confirmation,'technical-confirmed');
+ assert.equal(result.tier,'High Conviction');
+});
