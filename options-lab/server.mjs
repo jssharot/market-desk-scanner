@@ -1,7 +1,7 @@
 import {createServer} from 'node:http';
 import {readFile} from 'node:fs/promises';
 import {screenContract,scoreContract,scoreSetup} from './risk.mjs';
-import {initJournal,listJournal,mergeJournal,deleteJournal,closePaperTrade} from './paper-journal.mjs';
+import {initJournal,listJournal,mergeJournal,deleteJournal,closePaperTrade,saveScannerDiagnostic,listScannerDiagnostics} from './paper-journal.mjs';
 import {paperExitDecision,paperEntryCandidate} from './paper-strategy.mjs';
 import {performanceMetrics} from './performance.mjs';
 let journalReady=false;
@@ -13,7 +13,7 @@ function send(res,status,data){res.writeHead(status,{'content-type':'application
 async function upstream(path){if(!secret)throw Error('Market Desk backend not configured');const r=await fetch(new URL(path,base),{headers:{Authorization:'Bearer '+secret},signal:AbortSignal.timeout(12000)});if(!r.ok)throw Error('Market Desk backend error '+r.status);return r.json()}
 function symbol(s){if(!/^[A-Z]{1,5}$/.test(s))throw Error('Invalid symbol');return s}
 function expiry(s){if(!/^\d{4}-\d{2}-\d{2}$/.test(s))throw Error('Invalid expiry');return s}
-const scanState={lastRun:null,lastError:null,lastAttempt:null,lastOutcome:'waiting',successfulScans:0,failedScans:0,candidates:[],running:false,history:[],confirmed:[],priorCandidates:[],alerts:[]};
+const scanState={lastRun:null,lastError:null,lastAttempt:null,lastOutcome:'waiting',successfulScans:0,failedScans:0,candidates:[],running:false,history:[],confirmed:[],priorCandidates:[],alerts:[],rejections:{}};
 function easternNow(){const parts=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',weekday:'short',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date());const x=Object.fromEntries(parts.map(p=>[p.type,p.value]));return {weekday:x.weekday,minutes:Number(x.hour)*60+Number(x.minute)}}
 async function backgroundScan(){
  if(scanState.running)return;
@@ -28,25 +28,29 @@ async function backgroundScan(){
   const snapshots=await upstream(qs.pathname+qs.search);
   const stocks=(snapshots.quotes||[]).filter(x=>!x.unavailable&&Number.isFinite(x.price)&&Number.isFinite(x.changePercent)&&Math.abs(x.changePercent)>=0.75).sort((a,b)=>Math.abs(b.changePercent)-Math.abs(a.changePercent)).slice(0,10);
   const checkedAt=new Date().toISOString();
+  const rejections={};
+  const reject=(reason)=>{rejections[reason]=(rejections[reason]||0)+1;return null};
+  rejections['Not optionable']=Math.max(0,(active.stocks||[]).length-symbols.length);
+  rejections['Quote or momentum filter']=Math.max(0,symbols.length-stocks.length);
   const results=await Promise.all(stocks.map(async stock=>{
    try{
     const e=new URL('/expirations',base);e.searchParams.set('symbol',stock.symbol);
     const ex=await upstream(e.pathname+e.search);
     const dateParts=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date());const dateFields=Object.fromEntries(dateParts.map(p=>[p.type,p.value]));const today=dateFields.year+'-'+dateFields.month+'-'+dateFields.day;
     const dates=(ex.expirations||[]).filter(d=>{const diff=(Date.parse(d+'T12:00:00Z')-Date.parse(today+'T12:00:00Z'))/86400000;return diff>=0&&diff<=10});
-    if(!dates.length)return null;
+    if(!dates.length)return reject('No near-term expiry');
     const side=stock.changePercent>0?'call':'put';
     const target=new URL('/chain',base);Object.entries({symbol:stock.symbol,expiry:dates[0],side}).forEach(([k,v])=>target.searchParams.set(k,v));
     const chain=await upstream(target.pathname+target.search);
     const eligible=(chain.contracts||[]).map(c=>({...c,screen:scoreContract({...c,expiry:dates[0]},{underlyingPrice:stock.price})})).filter(c=>c.screen.eligible&&Number.isFinite(c.strike)&&Math.abs(c.strike-stock.price)/stock.price<=0.08).sort((a,b)=>b.screen.score-a.screen.score);
-    if(!eligible.length)return null;
+    if(!eligible.length)return reject('No eligible liquid contract');
     const c=eligible[0];
     const barsUrl=new URL('/bars',base);barsUrl.searchParams.set('symbol',stock.symbol);barsUrl.searchParams.set('range','1D');
     const intraday=await upstream(barsUrl.pathname+barsUrl.search);
     const bars=(intraday.bars||[]).filter(b=>Number.isFinite(b.h)&&Number.isFinite(b.l)&&Number.isFinite(b.c));
     const previous=bars.slice(-13,-1);
     const last=bars.at(-1);
-    if(previous.length<8||!last||!Number.isFinite(Date.parse(last.t))||Date.now()-Date.parse(last.t)>180000)return null;
+    if(previous.length<8||!last||!Number.isFinite(Date.parse(last.t))||Date.now()-Date.parse(last.t)>180000)return reject('Insufficient or stale intraday bars');
     const recentHigh=Math.max(...previous.map(b=>b.h)),recentLow=Math.min(...previous.map(b=>b.l));
     const isBreakout=side==='call'?last.c>recentHigh:last.c<recentLow;
     const volumeAverage=previous.reduce((n,b)=>n+(Number(b.v)||0),0)/previous.length;
@@ -57,9 +61,11 @@ async function backgroundScan(){
     const stopLevel=side==='call'?Number((last.c-range*.5).toFixed(2)):Number((last.c+range*.5).toFixed(2));
     const targetLevel=side==='call'?Number((last.c+range).toFixed(2)):Number((last.c-range).toFixed(2));
     return {id:stock.symbol+'-'+dates[0]+'-'+side+'-'+c.strike,symbol:stock.symbol,side,expiry:dates[0],strike:c.strike,ask:c.ask,bid:c.bid,underlying:stock.price,changePercent:stock.changePercent,spreadPct:c.screen.spreadPct,premiumDollars:c.screen.premiumDollars,quoteTime:c.quoteTime,checkedAt,classification:isBreakout&&volumeConfirmed?'BREAKOUT_WATCH':'DEVELOPING_WATCH',setup,breakoutLevel:side==='call'?recentHigh:recentLow,stopLevel,targetLevel,volumeRatio:volumeRatio===null?null:Number(volumeRatio.toFixed(2)),barTime:last.t,reason:isBreakout&&volumeConfirmed?'Intraday breakout with 1.3x recent volume; research only.':'Developing setup; breakout and volume not both confirmed. Research only.'};
-   }catch{return null}
+   }catch{return reject('Upstream symbol data error')}
   }));
   const current=results.filter(Boolean);
+  rejections['Breakout not confirmed']=current.filter(c=>c.classification!=='BREAKOUT_WATCH').length;
+  scanState.rejections=rejections;
   const prior=new Map(scanState.priorCandidates.map(c=>[c.id,c]));
   const confirmed=current.filter(c=>c.classification==='BREAKOUT_WATCH'&&prior.get(c.id)?.classification==='BREAKOUT_WATCH'&&Math.sign(prior.get(c.id).changePercent)===Math.sign(c.changePercent));
   scanState.confirmed=confirmed.map(c=>({...c,classification:'CONFIRMED_BREAKOUT_WATCH',reason:'Intraday breakout and volume condition persisted over two scans. Still a research alert, not a verified executable entry or guarantee.'}));
@@ -88,7 +94,9 @@ async function backgroundScan(){
   scanState.alerts=scanState.alerts.slice(0,40);
   scanState.lastRun=checkedAt;scanState.lastError=null;scanState.lastOutcome='completed';scanState.successfulScans++;
   const tiers=Object.fromEntries(['High Conviction','Actionable','Watchlist','Developing'].map(t=>[t,scanState.candidates.filter(c=>c.setup?.tier===t).length]));
-  scanState.history.unshift({checkedAt,candidates:scanState.candidates.length,confirmed:scanState.confirmed.length,tiers});scanState.history=scanState.history.slice(0,100);
+  const diagnostic={checkedAt,candidates:scanState.candidates.length,confirmed:scanState.confirmed.length,tiers,rejections};
+  scanState.history.unshift(diagnostic);scanState.history=scanState.history.slice(0,100);
+  if(journalReady)try{await saveScannerDiagnostic(diagnostic)}catch(e){console.error('Scanner history persistence failed:',e.message)}
  }catch(e){scanState.lastError=e.message;scanState.lastOutcome='failed';scanState.failedScans++;console.error('Options Lab background scan failed:',e.message)}
  finally{scanState.running=false}
 }
@@ -147,7 +155,8 @@ if(req.method==='GET'&&u.pathname==='/api/performance'){
  return send(res,200,{...performanceMetrics(await listJournal()),source:'postgres',hypothetical:true,notice:'One-contract hypothetical premiums before fees and slippage. No actual orders.'});
 }
 if(req.method==='GET'&&u.pathname==='/api/monitor'){
- return send(res,200,{...scanState,paperExits:paperExitStatus,storage:{paperJournal:journalReady?'postgres':'browser-only',durable:journalReady},notice:'Intraday breakout and volume filters with two-scan confirmation. No live trade execution, guaranteed fills, persistent paper fills or closed-app push. Scan state resets when server restarts.'});
+ const savedHistory=journalReady?await listScannerDiagnostics().catch(()=>[]):[];
+ return send(res,200,{...scanState,history:savedHistory.length?savedHistory:scanState.history,paperExits:paperExitStatus,storage:{paperJournal:journalReady?'postgres':'browser-only',durable:journalReady},notice:'Intraday breakout and volume filters with two-scan confirmation. No live trade execution, guaranteed fills, persistent paper fills or closed-app push. Scan state resets when server restarts.'});
 }
 if(req.method==='GET'&&u.pathname==='/api/scanner'){
  const active=await upstream('/most-active');
