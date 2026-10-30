@@ -15,11 +15,11 @@ async function backgroundScan(){
  scanState.running=true;
  try{
   const active=await upstream('/most-active');
-  const symbols=[...new Set((active.stocks||[]).filter(x=>x.optionsEligible===true).map(x=>x.symbol))].slice(0,20);
+  const symbols=[...new Set((active.stocks||[]).filter(x=>x.optionsEligible===true).map(x=>x.symbol))].slice(0,30);
   if(!symbols.length)throw Error('No optionable candidates');
   const qs=new URL('/quotes',base);qs.searchParams.set('symbols',symbols.join(','));
   const snapshots=await upstream(qs.pathname+qs.search);
-  const stocks=(snapshots.quotes||[]).filter(x=>!x.unavailable&&Number.isFinite(x.price)&&Number.isFinite(x.changePercent)&&Math.abs(x.changePercent)>=2).sort((a,b)=>Math.abs(b.changePercent)-Math.abs(a.changePercent)).slice(0,5);
+  const stocks=(snapshots.quotes||[]).filter(x=>!x.unavailable&&Number.isFinite(x.price)&&Number.isFinite(x.changePercent)&&Math.abs(x.changePercent)>=0.75).sort((a,b)=>Math.abs(b.changePercent)-Math.abs(a.changePercent)).slice(0,10);
   const checkedAt=new Date().toISOString();
   const results=await Promise.all(stocks.map(async stock=>{
    try{
@@ -31,7 +31,7 @@ async function backgroundScan(){
     const side=stock.changePercent>0?'call':'put';
     const target=new URL('/chain',base);Object.entries({symbol:stock.symbol,expiry:dates[0],side}).forEach(([k,v])=>target.searchParams.set(k,v));
     const chain=await upstream(target.pathname+target.search);
-    const eligible=(chain.contracts||[]).map(c=>({...c,screen:screenContract({...c,expiry:dates[0]})})).filter(c=>c.screen.eligible&&Math.abs(c.strike-stock.price)/stock.price<=0.04).sort((a,b)=>Math.abs(a.strike-stock.price)-Math.abs(b.strike-stock.price)||a.screen.spreadPct-b.screen.spreadPct);
+    const eligible=(chain.contracts||[]).map(c=>({...c,screen:scoreContract({...c,expiry:dates[0]},{underlyingPrice:stock.price})})).filter(c=>c.screen.eligible&&Number.isFinite(c.strike)&&Math.abs(c.strike-stock.price)/stock.price<=0.08).sort((a,b)=>b.screen.score-a.screen.score);
     if(!eligible.length)return null;
     const c=eligible[0];
     const barsUrl=new URL('/bars',base);barsUrl.searchParams.set('symbol',stock.symbol);barsUrl.searchParams.set('range','1D');
@@ -39,23 +39,24 @@ async function backgroundScan(){
     const bars=(intraday.bars||[]).filter(b=>Number.isFinite(b.h)&&Number.isFinite(b.l)&&Number.isFinite(b.c));
     const previous=bars.slice(-13,-1);
     const last=bars.at(-1);
-    if(previous.length<8||!last||Date.now()-Date.parse(last.t)>180000)return null;
+    if(previous.length<8||!last||!Number.isFinite(Date.parse(last.t))||Date.now()-Date.parse(last.t)>180000)return null;
     const recentHigh=Math.max(...previous.map(b=>b.h)),recentLow=Math.min(...previous.map(b=>b.l));
     const isBreakout=side==='call'?last.c>recentHigh:last.c<recentLow;
     const volumeAverage=previous.reduce((n,b)=>n+(Number(b.v)||0),0)/previous.length;
     const volumeConfirmed=volumeAverage>0&&Number(last.v)>=volumeAverage*1.3;
-    if(!isBreakout||!volumeConfirmed)return null;
+    const volumeRatio=volumeAverage>0?Number(last.v)/volumeAverage:null;
+    const setup=scoreSetup({quoteScore:c.screen.score,changePercent:stock.changePercent,volumeRatio,breakoutConfirmed:isBreakout&&volumeConfirmed});
     const range=Math.max(0.01,recentHigh-recentLow);
     const stopLevel=side==='call'?Number((last.c-range*.5).toFixed(2)):Number((last.c+range*.5).toFixed(2));
     const targetLevel=side==='call'?Number((last.c+range).toFixed(2)):Number((last.c-range).toFixed(2));
-    return {id:stock.symbol+'-'+dates[0]+'-'+side+'-'+c.strike,symbol:stock.symbol,side,expiry:dates[0],strike:c.strike,ask:c.ask,bid:c.bid,underlying:stock.price,changePercent:stock.changePercent,spreadPct:c.screen.spreadPct,premiumDollars:c.screen.premiumDollars,quoteTime:c.quoteTime,checkedAt,classification:'BREAKOUT_WATCH',breakoutLevel:side==='call'?recentHigh:recentLow,stopLevel,targetLevel,volumeRatio:Number((Number(last.v)/volumeAverage).toFixed(2)),barTime:last.t,reason:'Intraday bar breakout with 1.3x recent volume. Stock-based stop/target are illustrative, not option premium stop/target; no catalyst verification.'};
+    return {id:stock.symbol+'-'+dates[0]+'-'+side+'-'+c.strike,symbol:stock.symbol,side,expiry:dates[0],strike:c.strike,ask:c.ask,bid:c.bid,underlying:stock.price,changePercent:stock.changePercent,spreadPct:c.screen.spreadPct,premiumDollars:c.screen.premiumDollars,quoteTime:c.quoteTime,checkedAt,classification:isBreakout&&volumeConfirmed?'BREAKOUT_WATCH':'DEVELOPING_WATCH',setup,breakoutLevel:side==='call'?recentHigh:recentLow,stopLevel,targetLevel,volumeRatio:volumeRatio===null?null:Number(volumeRatio.toFixed(2)),barTime:last.t,reason:isBreakout&&volumeConfirmed?'Intraday breakout with 1.3x recent volume; research only.':'Developing setup; breakout and volume not both confirmed. Research only.'};
    }catch{return null}
   }));
   const current=results.filter(Boolean);
   const prior=new Map(scanState.priorCandidates.map(c=>[c.id,c]));
-  const confirmed=current.filter(c=>prior.has(c.id)&&Math.sign(prior.get(c.id).changePercent)===Math.sign(c.changePercent)&&Math.abs(c.changePercent)>=Math.abs(prior.get(c.id).changePercent));
+  const confirmed=current.filter(c=>c.classification==='BREAKOUT_WATCH'&&prior.get(c.id)?.classification==='BREAKOUT_WATCH'&&Math.sign(prior.get(c.id).changePercent)===Math.sign(c.changePercent));
   scanState.confirmed=confirmed.map(c=>({...c,classification:'CONFIRMED_BREAKOUT_WATCH',reason:'Intraday breakout and volume condition persisted over two scans. Still a research alert, not a verified executable entry or guarantee.'}));
-  scanState.candidates=current;scanState.priorCandidates=current;
+  scanState.candidates=current.sort((a,b)=>b.setup.score-a.setup.score);scanState.priorCandidates=current;
   for(const c of scanState.confirmed){
    const last=scanState.alerts.find(a=>a.id===c.id&&Date.now()-Date.parse(a.checkedAt)<3600000);
    if(!last)scanState.alerts.unshift(c);
@@ -92,11 +93,11 @@ if(req.method==='GET'&&u.pathname==='/api/scanner'){
 }
 if(req.method==='GET'&&u.pathname==='/api/opportunities'){
  const active=await upstream('/most-active');
- const symbols=[...new Set((active.stocks||[]).filter(x=>x.optionsEligible===true).map(x=>x.symbol))].slice(0,12);
+ const symbols=[...new Set((active.stocks||[]).filter(x=>x.optionsEligible===true).map(x=>x.symbol))].slice(0,24);
  if(!symbols.length)return send(res,200,{candidates:[],checkedAt:new Date().toISOString(),note:'No options-enabled high-volume candidates returned.'});
  const qs=new URL('/quotes',base);qs.searchParams.set('symbols',symbols.join(','));
  const snapshots=await upstream(qs.pathname+qs.search);
- const movers=(snapshots.quotes||[]).filter(x=>!x.unavailable&&Number.isFinite(x.price)&&Number.isFinite(x.changePercent)).sort((a,b)=>Math.abs(b.changePercent)-Math.abs(a.changePercent)).slice(0,5);
+ const movers=(snapshots.quotes||[]).filter(x=>!x.unavailable&&Number.isFinite(x.price)&&Number.isFinite(x.changePercent)).sort((a,b)=>Math.abs(b.changePercent)-Math.abs(a.changePercent)).slice(0,10);
  const results=await Promise.all(movers.map(async stock=>{
   try{
    const e=new URL('/expirations',base);e.searchParams.set('symbol',stock.symbol);
@@ -106,15 +107,16 @@ if(req.method==='GET'&&u.pathname==='/api/opportunities'){
    const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(now));
    const et=Object.fromEntries(parts.map(p=>[p.type,p.value]));
    const today=`${et.year}-${et.month}-${et.day}`;
-   const expiryDate=dates.find(d=>{if(typeof d!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(d))return false;const days=(Date.parse(d+'T12:00:00Z')-Date.parse(today+'T12:00:00Z'))/86400000;return days>=0&&days<=10});
+   const expiryDates=dates.filter(d=>{if(typeof d!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(d))return false;const days=(Date.parse(d+'T12:00:00Z')-Date.parse(today+'T12:00:00Z'))/86400000;return days>=0&&days<=10}).slice(0,2);
+   const expiryDate=expiryDates[0];
    if(!expiryDate)return {symbol:stock.symbol,changePercent:stock.changePercent,reason:'No expiration within 10 days',contracts:[]};
-   const chains=await Promise.all(['call','put'].map(async side=>{const c=new URL('/chain',base);Object.entries({symbol:stock.symbol,expiry:expiryDate,side}).forEach(([k,v])=>c.searchParams.set(k,v));try{return {side,data:await upstream(c.pathname+c.search)}}catch{return {side,data:{contracts:[]}}}}));
-   const contracts=chains.flatMap(({side,data})=>(data.contracts||[]).map(c=>({...c,side,expiry:expiryDate,screen:scoreContract({...c,expiry:expiryDate},{underlyingPrice:stock.price})}))).filter(c=>c.screen.eligible).sort((a,b)=>b.screen.score-a.screen.score||a.screen.spreadPct-b.screen.spreadPct).slice(0,4);
+   const chains=await Promise.all(expiryDates.flatMap(date=>['call','put'].map(async side=>{const c=new URL('/chain',base);Object.entries({symbol:stock.symbol,expiry:date,side}).forEach(([k,v])=>c.searchParams.set(k,v));try{return {side,date,data:await upstream(c.pathname+c.search)}}catch{return {side,date,data:{contracts:[]}}}})));
+   const contracts=chains.flatMap(({side,date,data})=>(data.contracts||[]).map(c=>({...c,side,expiry:date,screen:scoreContract({...c,expiry:date},{underlyingPrice:stock.price})}))).filter(c=>c.screen.eligible).sort((a,b)=>b.screen.score-a.screen.score||a.screen.spreadPct-b.screen.spreadPct).slice(0,8);
    const ranked=contracts.map(c=>({...c,setup:scoreSetup({quoteScore:c.screen.score,changePercent:stock.changePercent})})).sort((a,b)=>b.setup.score-a.setup.score||b.screen.score-a.screen.score);
    return {symbol:stock.symbol,price:stock.price,changePercent:stock.changePercent,expiry:expiryDate,contracts:ranked};
   }catch(e){return {symbol:stock.symbol,changePercent:stock.changePercent,reason:'Data unavailable',contracts:[]}}
  }));
- return send(res,200,{candidates:results,checkedAt:new Date().toISOString(),note:'Quote quality and separate momentum-aware setup ranking. Unconfirmed setups are capped below High Conviction; no breakout or relative volume is assumed. Research only, not a probability of profit or trade recommendation. Quotes may become stale immediately; recheck before acting.'});
+ return send(res,200,{candidates:results,checkedAt:new Date().toISOString(),note:'Expanded discovery across up to 24 active stocks, 10 movers, two near-term expirations and both option sides. Quote quality and separate momentum-aware setup ranking. Unconfirmed setups are capped below High Conviction; no breakout or relative volume is assumed. Research only, not a probability of profit or trade recommendation. Quotes may become stale immediately; recheck before acting.'});
 }
 if(req.method==='GET'&&u.pathname==='/api/market-status'){
  const j=await upstream('/state');
