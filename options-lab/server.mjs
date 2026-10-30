@@ -1,6 +1,6 @@
 import {createServer} from 'node:http';
 import {readFile} from 'node:fs/promises';
-import {screenContract,scoreContract} from './risk.mjs';
+import {screenContract,scoreContract,scoreSetup} from './risk.mjs';
 const base=process.env.MARKET_DESK_BACKEND_URL||'https://market-desk-paper-scanner.onrender.com';
 const secret=process.env.SCANNER_SHARED_SECRET;
 const access=process.env.OPTIONS_LAB_ACCESS_KEY;
@@ -110,10 +110,11 @@ if(req.method==='GET'&&u.pathname==='/api/opportunities'){
    if(!expiryDate)return {symbol:stock.symbol,changePercent:stock.changePercent,reason:'No expiration within 10 days',contracts:[]};
    const chains=await Promise.all(['call','put'].map(async side=>{const c=new URL('/chain',base);Object.entries({symbol:stock.symbol,expiry:expiryDate,side}).forEach(([k,v])=>c.searchParams.set(k,v));try{return {side,data:await upstream(c.pathname+c.search)}}catch{return {side,data:{contracts:[]}}}}));
    const contracts=chains.flatMap(({side,data})=>(data.contracts||[]).map(c=>({...c,side,expiry:expiryDate,screen:scoreContract({...c,expiry:expiryDate},{underlyingPrice:stock.price})}))).filter(c=>c.screen.eligible).sort((a,b)=>b.screen.score-a.screen.score||a.screen.spreadPct-b.screen.spreadPct).slice(0,4);
-   return {symbol:stock.symbol,price:stock.price,changePercent:stock.changePercent,expiry:expiryDate,contracts};
+   const ranked=contracts.map(c=>({...c,setup:scoreSetup({quoteScore:c.screen.score,changePercent:stock.changePercent})})).sort((a,b)=>b.setup.score-a.setup.score||b.screen.score-a.screen.score);
+   return {symbol:stock.symbol,price:stock.price,changePercent:stock.changePercent,expiry:expiryDate,contracts:ranked};
   }catch(e){return {symbol:stock.symbol,changePercent:stock.changePercent,reason:'Data unavailable',contracts:[]}}
  }));
- return send(res,200,{candidates:results,checkedAt:new Date().toISOString(),note:'Tiered quote-quality ranking (High Conviction / Actionable / Watchlist / Rejected). Scores measure liquidity and pricing, NOT probability of profit, directional conviction, or trade recommendations. Quotes may become stale immediately; recheck before acting.'});
+ return send(res,200,{candidates:results,checkedAt:new Date().toISOString(),note:'Quote quality and separate momentum-aware setup ranking. Unconfirmed setups are capped below High Conviction; no breakout or relative volume is assumed. Research only, not a probability of profit or trade recommendation. Quotes may become stale immediately; recheck before acting.'});
 }
 if(req.method==='GET'&&u.pathname==='/api/market-status'){
  const j=await upstream('/state');
