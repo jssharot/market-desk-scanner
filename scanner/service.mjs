@@ -124,6 +124,7 @@ async function optionsLabHeartbeat(){
  try{
   const response=await fetch('https://options-lab-beta.onrender.com/health',{signal:AbortSignal.timeout(20000),headers:{'user-agent':'MarketDesk-OptionsLab-Heartbeat/1.0'}});
   if(!response.ok)console.warn('Options Lab health returned',response.status);
+  else console.log('Options Lab heartbeat success',response.status,new Date().toISOString());
  }catch(error){console.warn('Options Lab heartbeat failed:',error.message)}
  finally{optionsLabHeartbeatBusy=false}
 }
