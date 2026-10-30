@@ -1,7 +1,7 @@
 import {createServer} from 'node:http';
 import {readFile} from 'node:fs/promises';
 import {screenContract,scoreContract,scoreSetup} from './risk.mjs';
-import {initJournal,listJournal,mergeJournal,deleteJournal,closePaperTrade,saveScannerDiagnostic,listScannerDiagnostics} from './paper-journal.mjs';
+import {initJournal,listJournal,mergeJournal,deleteJournal,closePaperTrade,saveScannerDiagnostic,listScannerDiagnostics,recordPaperQuote,paperQuoteCoverage} from './paper-journal.mjs';
 import {paperExitDecision,paperEntryCandidate} from './paper-strategy.mjs';
 import {performanceMetrics} from './performance.mjs';
 let journalReady=false;
@@ -135,6 +135,7 @@ async function monitorPaperExits(){
     const chain=await upstream(q.pathname+q.search);
     const contract=(chain.contracts||[]).find(c=>Math.abs(Number(c.strike)-Number(trade.strike))<0.001);
     if(!contract||!Number.isFinite(contract.bid)||contract.bid<0||!Number.isFinite(contract.bidSize)||contract.bidSize<1)continue;
+    await recordPaperQuote(trade.id,contract);
     const reason=paperExitDecision(trade,contract);
     checked++;
     if(reason&&await closePaperTrade(trade.id,contract.bid,reason,contract.quoteTime))closed++;
@@ -164,6 +165,10 @@ if(u.pathname==='/api/paper-journal'){
   const result=await mergeJournal(JSON.parse(raw).trades);
   return send(res,200,{...result,durable:true});
  }
+}
+if(req.method==='GET'&&u.pathname==='/api/strategy-coverage'){
+ if(!journalReady)return send(res,503,{error:'Paper journal database not ready'});
+ return send(res,200,{coverage:await paperQuoteCoverage(),samplingIntervalSeconds:60,source:'postgres',notice:'Observed fresh option bid snapshots only, not continuous tick history; unobserved stop/target touches cannot be inferred.'});
 }
 if(req.method==='GET'&&u.pathname==='/api/risk'){
  if(!journalReady)return send(res,503,{error:'Paper journal database not ready'});
