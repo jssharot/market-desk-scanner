@@ -259,6 +259,11 @@ async function refreshMonitor(){
   old.forEach(el=>el.remove());
   diagnostic.classList.add('scanner-diagnostic');
   $('monitor-status').after(diagnostic);
+  const oldRejections=$('monitor-status').parentNode.querySelector('.scanner-rejections');if(oldRejections)oldRejections.remove();
+  const rejectionSummary=document.createElement('p');rejectionSummary.className='muted scanner-rejections';
+  const reasons=Object.entries(state.rejections||{}).filter(([,n])=>n>0).sort((a,b)=>b[1]-a[1]);
+  rejectionSummary.textContent='Latest scan filters: '+(reasons.length?reasons.map(([reason,n])=>reason+' ('+n+')').join(' • '):'No rejection data yet');
+  $('monitor-status').parentNode.append(rejectionSummary);
   const box=$('monitor-results');box.replaceChildren();
   for(const c of state.candidates||[]){
    const p=document.createElement('p');p.className='muted';
