@@ -59,6 +59,25 @@ async function backgroundScan(){
   const prior=new Map(scanState.priorCandidates.map(c=>[c.id,c]));
   const confirmed=current.filter(c=>c.classification==='BREAKOUT_WATCH'&&prior.get(c.id)?.classification==='BREAKOUT_WATCH'&&Math.sign(prior.get(c.id).changePercent)===Math.sign(c.changePercent));
   scanState.confirmed=confirmed.map(c=>({...c,classification:'CONFIRMED_BREAKOUT_WATCH',reason:'Intraday breakout and volume condition persisted over two scans. Still a research alert, not a verified executable entry or guarantee.'}));
+  // Simulated entries only: confirmed two-scan breakouts, fresh ask, one contract.
+  if(journalReady){
+   try{
+    const existing=await listJournal();
+    const existingIds=new Set(existing.map(t=>t.id));
+    const entries=[];
+    for(const c of scanState.confirmed){
+     const id='server-auto-'+c.id+'-'+checkedAt.slice(0,10);
+     if(existingIds.has(id)||!['High Conviction','Actionable'].includes(c.setup?.tier))continue;
+     if(!Number.isFinite(c.ask)||c.ask<=0||c.ask*100>1000||!Number.isFinite(c.bid)||c.bid<=0||!Number.isFinite(c.spreadPct)||c.spreadPct>15)continue;
+     const age=Date.now()-Date.parse(c.quoteTime);
+     if(!Number.isFinite(age)||age< -5000||age>30000)continue;
+     entries.push({id,symbol:c.symbol,side:c.side,expiry:c.expiry,strike:c.strike,entry:c.ask,createdAt:checkedAt,auto:true,source:'server-confirmed-breakout',setupScore:c.setup.score,setupTier:c.setup.tier,entryQuoteTime:c.quoteTime,entryAssumption:'Quoted ask, hypothetical one-contract entry; no execution verified'});
+     existingIds.add(id);
+     if(entries.length>=3)break;
+    }
+    if(entries.length)await mergeJournal(entries);
+   }catch(e){console.error('Paper auto-entry failed:',e.message)}
+  }
   scanState.candidates=current.sort((a,b)=>b.setup.score-a.setup.score);scanState.priorCandidates=current;
   for(const c of scanState.confirmed){
    const last=scanState.alerts.find(a=>a.id===c.id&&Date.now()-Date.parse(a.checkedAt)<3600000);
