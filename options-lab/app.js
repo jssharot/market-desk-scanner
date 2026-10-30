@@ -255,9 +255,10 @@ async function refreshMonitor(){
    if(changed)journalWrite(rows);
   }
   const diagnostic=document.createElement('p');diagnostic.className='muted';diagnostic.textContent='Scanner diagnostics: '+(state.lastOutcome||'waiting')+' • '+(state.successfulScans||0)+' completed • '+(state.failedScans||0)+' failed'+(state.lastAttempt?' • Last attempt '+quoteDate(state.lastAttempt):' • Awaiting market-hours run')+'. Counts reset on service restart.';
-  $('monitor-status').after(diagnostic);
   const old=$('monitor-status').parentNode.querySelectorAll('.scanner-diagnostic');
-  old.forEach(el=>el.remove());diagnostic.classList.add('scanner-diagnostic');
+  old.forEach(el=>el.remove());
+  diagnostic.classList.add('scanner-diagnostic');
+  $('monitor-status').after(diagnostic);
   const box=$('monitor-results');box.replaceChildren();
   for(const c of state.candidates||[]){
    const p=document.createElement('p');p.className='muted';
