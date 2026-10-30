@@ -66,7 +66,7 @@ async function backgroundScan(){
  }catch(e){scanState.lastError=e.message}
  finally{scanState.running=false}
 }
-const scanIfMarketHours=()=>{const t=easternNow();if(['Mon','Tue','Wed','Thu','Fri'].includes(t.weekday)&&t.minutes>=570&&t.minutes<=960)void backgroundScan()};setInterval(scanIfMarketHours,300000).unref();scanIfMarketHours();
+const scanIfMarketHours=async()=>{const t=easternNow();if(!['Mon','Tue','Wed','Thu','Fri'].includes(t.weekday)||t.minutes<570||t.minutes>=960)return;try{const state=await upstream('/state');if(state.session?.isOpen===false||state.session?.marketOpen===false)return}catch{return}void backgroundScan()};setInterval(scanIfMarketHours,300000).unref();scanIfMarketHours();
 createServer(async(req,res)=>{const u=new URL(req.url,'http://localhost');
 if(u.pathname==='/health')return send(res,200,{ok:true,configured:!!secret&&!!access});
 if(req.method==='GET'&&['/','/index.html','/app.js'].includes(u.pathname)){res.writeHead(200,{'content-type':u.pathname==='/app.js'?'text/javascript':'text/html','cache-control':'no-store'});return res.end(await readFile(new URL(u.pathname==='/app.js'?'./app.js':'./index.html',import.meta.url)))}
@@ -137,9 +137,9 @@ if(req.method==='GET'&&u.pathname==='/api/paper-quote'){
  const q=new URL('/chain',base);for(const [k,v] of Object.entries({symbol:sym,expiry:date,side}))q.searchParams.set(k,v);
  const chain=await upstream(q.pathname+q.search);
  const c=(chain.contracts||[]).find(x=>Math.abs(Number(x.strike)-strike)<0.001);
- if(!c||!Number.isFinite(c.bid)||c.bid<0)return send(res,200,{available:false,reason:'No valid bid'});
+ if(!c||!Number.isFinite(Number(c.bid))||Number(c.bid)<0)return send(res,200,{available:false,reason:'No valid bid'});
  const age=Date.now()-Date.parse(c.quoteTime);
- return send(res,200,{available:Number.isFinite(age)&&age>=0&&age<=30000&&Number(c.bidSize)>0,bid:c.bid,ask:c.ask,quoteTime:c.quoteTime,bidSize:c.bidSize,ageMs:age,source:'Alpaca OPRA; indicative, not executable'});
+ return send(res,200,{available:Number.isFinite(age)&&age>=0&&age<=30000&&Number(c.bidSize)>0,bid:Number(c.bid),ask:Number(c.ask),quoteTime:c.quoteTime,bidSize:Number(c.bidSize),ageMs:age,source:'Alpaca OPRA; indicative, not executable'});
 }
 if(req.method==='GET'&&u.pathname==='/api/chain'){const sym=symbol(u.searchParams.get('symbol')),date=expiry(u.searchParams.get('expiry')),side=u.searchParams.get('side');if(!['call','put'].includes(side))throw Error('Invalid side');const q=new URL('/chain',base);for(const [k,v] of Object.entries({symbol:sym,expiry:date,side}))q.searchParams.set(k,v);const j=await upstream(q.pathname+q.search);return send(res,200,{...j,screened:(j.contracts||[]).map(c=>({...c,screen:screenContract({...c,expiry:date})}))})}
 return send(res,404,{error:'Not found'})
