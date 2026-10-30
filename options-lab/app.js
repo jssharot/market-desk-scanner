@@ -138,7 +138,8 @@ function journalWrite(rows){localStorage.setItem(journalKey,JSON.stringify(rows)
 function renderJournal(){
  const rows=journalRead(),closed=rows.filter(x=>Number.isFinite(x.exit));
  const pnl=closed.reduce((n,x)=>n+(x.exit-x.entry)*100,0);const average=closed.length?pnl/closed.length:0;let equity=0,peak=0,drawdown=0;for(const x of [...closed].sort((a,b)=>Date.parse(a.closedAt||a.createdAt)-Date.parse(b.closedAt||b.createdAt))){equity+=(x.exit-x.entry)*100;peak=Math.max(peak,equity);drawdown=Math.max(drawdown,peak-equity)}
- $('journal-stats').textContent=rows.length+' tracked • '+closed.length+' closed • '+(closed.length?(100*closed.filter(x=>x.exit>x.entry).length/closed.length).toFixed(0)+'% win rate • ':'')+'Realized P/L '+(pnl>=0?'+':'')+money(pnl)+' • Avg/trade '+money(average)+' • Max drawdown '+money(drawdown);
+ const byTier=['High Conviction','Actionable','Watchlist','Developing','Unrated'].map(tier=>{const group=closed.filter(x=>(x.setupTier||'Unrated')===tier);return group.length?tier+': '+group.length+' closed, '+(100*group.filter(x=>x.exit>x.entry).length/group.length).toFixed(0)+'% wins, '+money(group.reduce((sum,x)=>sum+(x.exit-x.entry)*100,0))+' P/L':null}).filter(Boolean);
+ $('journal-stats').textContent=rows.length+' tracked • '+closed.length+' closed • '+(closed.length?(100*closed.filter(x=>x.exit>x.entry).length/closed.length).toFixed(0)+'% win rate • ':'')+'Realized P/L '+(pnl>=0?'+':'')+money(pnl)+' • Avg/trade '+money(average)+' • Max drawdown '+money(drawdown)+(byTier.length?' | By entry tier: '+byTier.join(' • '):'');
  $('journal-rows').replaceChildren(...rows.map(x=>{
   const tr=document.createElement('tr');
   for(const value of [x.symbol+' '+x.expiry+' '+x.side+' '+x.strike,money(x.entry),Number.isFinite(x.exit)?money(x.exit):'Open',Number.isFinite(x.exit)?((x.exit/x.entry-1)*100).toFixed(1)+'%':'—']){
@@ -168,10 +169,10 @@ $('scan-options').onclick=async()=>{
    if(!(item.contracts||[]).length){const p=document.createElement('p');p.className='muted';p.textContent=item.reason||'No contracts passed freshness, liquidity and budget checks';section.append(p)}
    for(const c of item.contracts||[]){
     count++;const line=document.createElement('div');line.style.margin='8px 0';line.style.display='flex';line.style.gap='12px';line.style.alignItems='center';line.style.flexWrap='wrap';
-    const label=document.createElement('span');label.textContent=c.side.toUpperCase()+' '+c.strike+' • '+displayDate(item.expiry)+' • Ask '+money(c.ask)+' • '+money(c.screen.premiumDollars)+'/contract';
+    const label=document.createElement('span');const setup=c.setup||{};label.textContent=c.side.toUpperCase()+' '+c.strike+' • '+displayDate(c.expiry||item.expiry)+' • Ask '+money(c.ask)+' • '+money(c.screen.premiumDollars)+'/contract • Setup '+(setup.score??'—')+'/100 '+(setup.tier||'Unrated')+' • Quote '+(c.screen.score??'—')+'/100'+(setup.confirmation==='momentum-only'?' • Momentum only':'');
     const btn=document.createElement('button');btn.textContent='Paper track';btn.onclick=()=>{
      const entry=Number(c.ask);if(!Number.isFinite(entry)||entry<=0)return;
-     const rows=journalRead();rows.unshift({id:Date.now()+'-'+Math.random(),symbol:item.symbol,side:c.side,strike:c.strike,expiry:item.expiry,entry,createdAt:new Date().toISOString()});journalWrite(rows);btn.disabled=true;btn.textContent='Tracked';
+     const rows=journalRead();rows.unshift({id:Date.now()+'-'+Math.random(),symbol:item.symbol,side:c.side,strike:c.strike,expiry:c.expiry||item.expiry,entry,setupScore:c.setup?.score??null,setupTier:c.setup?.tier||'Unrated',quoteScore:c.screen?.score??null,createdAt:new Date().toISOString()});journalWrite(rows);btn.disabled=true;btn.textContent='Tracked';
     };line.append(label,btn);section.append(line);
    }
    results.append(section);
@@ -228,7 +229,7 @@ async function refreshMonitor(){
     const id='auto-'+c.id+'-'+c.checkedAt.slice(0,10);
     if(rows.some(r=>r.id===id))continue;
     if(!Number.isFinite(c.ask)||c.ask<=0||c.ask*100>1000)continue;
-    rows.unshift({id,symbol:c.symbol,side:c.side,strike:c.strike,expiry:c.expiry,entry:c.ask,createdAt:c.checkedAt,auto:true,entryAssumption:'Ask quote, hypothetical; no fill verified'});
+    rows.unshift({id,symbol:c.symbol,side:c.side,strike:c.strike,expiry:c.expiry,entry:c.ask,createdAt:c.checkedAt,setupScore:c.setup?.score??null,setupTier:c.setup?.tier||'Unrated',quoteScore:c.setup?.factors?.[0]?.points??null,auto:true,entryAssumption:'Ask quote, hypothetical; no fill verified'});
     changed=true;
    }
    if(changed)journalWrite(rows);
@@ -236,7 +237,7 @@ async function refreshMonitor(){
   const box=$('monitor-results');box.replaceChildren();
   for(const c of state.candidates||[]){
    const p=document.createElement('p');p.className='muted';
-   p.textContent=c.symbol+' '+c.side.toUpperCase()+' '+c.strike+' '+displayDate(c.expiry)+' • '+money(c.premiumDollars)+'/contract • '+Number(c.changePercent).toFixed(2)+'% day • Breakout '+money(c.breakoutLevel)+' • Stock stop '+money(c.stopLevel)+' • Stock target '+money(c.targetLevel)+' • Volume '+c.volumeRatio+'x • WATCH ONLY';
+   p.textContent=(c.setup?.tier||'Developing')+' '+(c.setup?.score??'—')+'/100 • '+c.symbol+' '+c.side.toUpperCase()+' '+c.strike+' '+displayDate(c.expiry)+' • '+money(c.premiumDollars)+'/contract • '+Number(c.changePercent).toFixed(2)+'% day • Breakout '+money(c.breakoutLevel)+' • Stock stop '+money(c.stopLevel)+' • Stock target '+money(c.targetLevel)+' • Volume '+(c.volumeRatio===null?'unavailable':c.volumeRatio+'x')+' • '+(c.classification||'WATCH ONLY');
    box.append(p);
   }
  }catch(e){$('monitor-status').textContent='Monitor unavailable: '+e.message}
@@ -286,7 +287,7 @@ function downloadJournalFile(filename,content,type){
 }
 $('paper-backup').onclick=()=>downloadJournalFile('options-lab-journal-'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify({version:1,exportedAt:new Date().toISOString(),trades:journalRead()},null,2),'application/json');
 $('paper-export').onclick=()=>{
- const fields=['id','symbol','side','strike','expiry','entry','exit','createdAt','closedAt','exitReason','auto','entryAssumption','exitAssumption'];
+ const fields=['id','symbol','side','strike','expiry','entry','exit','createdAt','closedAt','exitReason','setupScore','setupTier','quoteScore','auto','entryAssumption','exitAssumption'];
  const csv=[fields.join(','),...journalRead().map(t=>fields.map(k=>'"'+String(t[k]??'').replaceAll('"','""')+'"').join(','))].join('\r\n');
  downloadJournalFile('options-lab-trades-'+new Date().toISOString().slice(0,10)+'.csv',csv,'text/csv');
 };
