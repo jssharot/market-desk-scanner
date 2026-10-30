@@ -150,7 +150,7 @@ function renderJournal(){
   b.textContent=Number.isFinite(x.exit)?'Remove':'Close';
   b.onclick=()=>{
    const all=journalRead(),index=all.findIndex(y=>y.id===x.id);if(index<0)return;
-   if(Number.isFinite(x.exit)){if(!confirm('Remove this paper trade?'))return;all.splice(index,1)}
+   if(Number.isFinite(x.exit)){if(!confirm('Remove this paper trade?'))return;const deleted=JSON.parse(localStorage.getItem('olab-paper-deleted-v1')||'[]');localStorage.setItem('olab-paper-deleted-v1',JSON.stringify([...new Set([...deleted,String(x.id)])]));all.splice(index,1)}
    else{const value=prompt('Paper exit option premium per share (e.g. 2.50):');if(value===null)return;const exit=Number(value);if(!Number.isFinite(exit)||exit<0){alert('Enter a valid premium');return}all[index].exit=exit;all[index].closedAt=new Date().toISOString();all[index].exitReason='Manual'}
    journalWrite(all);
   };
@@ -317,13 +317,14 @@ $('paper-sync').onclick=async()=>{
  try{
   const local=journalRead();
   const remote=await api('/api/paper-journal');
-  const serverIds=new Set(remote.trades.map(t=>t.id));
+  const deleted=JSON.parse(localStorage.getItem('olab-paper-deleted-v1')||'[]');
+  if(deleted.length)await api('/api/paper-journal',{method:'DELETE',headers:{'content-type':'application/json'},body:JSON.stringify({ids:deleted})});
   const missing=local;
   if(missing.length)await api('/api/paper-journal',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({trades:missing})});
   const refreshed=await api('/api/paper-journal');
   const merged=new Map(local.map(t=>[t.id,t]));
-  for(const t of refreshed.trades)if(!merged.has(t.id))merged.set(t.id,t);
-  localStorage.setItem(journalKey,JSON.stringify([...merged.values()]));renderJournal();
+  for(const t of refreshed.trades)if(!merged.has(t.id)&&!deleted.includes(t.id))merged.set(t.id,t);
+  localStorage.setItem(journalKey,JSON.stringify([...merged.values()]));if(deleted.length)localStorage.removeItem('olab-paper-deleted-v1');renderJournal();
   $('journal-storage-status').textContent='Database sync complete • '+refreshed.trades.length+' saved server-side • Existing records preserved. Automatic sync enabled for new entries and updates.';
  }catch(e){$('journal-storage-status').textContent='Sync failed: '+e.message+' • Your local journal remains intact.'}
  finally{button.disabled=false}
