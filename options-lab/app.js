@@ -154,6 +154,14 @@ function renderPerformanceDetail(closed){
   }
  }
 }
+function renderStrategyLab(rows){
+ const closed=rows.filter(t=>Number.isFinite(t.entry)&&t.entry>0&&Number.isFinite(t.exit)&&t.exit>=0);
+ const completePaths=closed.filter(t=>Array.isArray(t.bidHistory)&&t.bidHistory.length>=2&&t.bidHistory.every(p=>Number.isFinite(p.bid)&&Number.isFinite(Date.parse(p.time))));
+ const readiness=$('strategy-readiness');if(readiness)readiness.textContent=closed.length+' recorded closed trades • '+completePaths.length+' with timestamped bid paths • '+(completePaths.length?'Paths present but completeness and quote quality are not yet independently verified.':'Alternative exits cannot yet be backtested from the available journal.');
+ const comparison=$('strategy-comparison');if(comparison){comparison.replaceChildren();for(const [name,stop,target] of [['Current paper rules',-30,50],['Tighter stop and target',-20,40],['Moderate stop, wider target',-25,60]]){const tr=document.createElement('tr');for(const v of [name,stop+'%',target+'%',name==='Current paper rules'?closed.length+' recorded exits':'0 verified paths',name==='Current paper rules'&&closed.length?money(closed.reduce((n,t)=>n+(t.exit-t.entry)*100,0))+' recorded P/L':'Unavailable — intratrade bid history required']){const td=document.createElement('td');td.textContent=String(v);tr.append(td)}comparison.append(tr)}}
+ const leaderboard=$('strategy-leaderboard');if(leaderboard){leaderboard.replaceChildren();const groups=new Map();for(const t of closed){const name=t.setupTier||'Unrated';if(!groups.has(name))groups.set(name,[]);groups.get(name).push(t)}if(!groups.size)leaderboard.textContent='No closed paper trades yet. No strategy has a measured record.';else{const wrap=document.createElement('div');wrap.className='table-scroll';const table=document.createElement('table');const head=document.createElement('tr');for(const h of ['Recorded setup','Trades','Win rate','Profit factor','Net P/L','Readiness']){const th=document.createElement('th');th.textContent=h;head.append(th)}table.append(head);for(const [name,items] of [...groups].sort((a,b)=>b[1].reduce((n,t)=>n+(t.exit-t.entry)*100,0)-a[1].reduce((n,t)=>n+(t.exit-t.entry)*100,0))){const returns=items.map(t=>(t.exit-t.entry)*100);const profit=returns.reduce((n,x)=>n+Math.max(0,x),0);const loss=returns.reduce((n,x)=>n+Math.max(0,-x),0);const tr=document.createElement('tr');for(const value of [name,items.length,(100*returns.filter(x=>x>0).length/items.length).toFixed(1)+'%',loss?(profit/loss).toFixed(2):'N/A',money(returns.reduce((a,b)=>a+b,0)),items.length>=30?'Sample threshold met; needs validation':'Insufficient sample (<30)']){const td=document.createElement('td');td.textContent=String(value);tr.append(td)}table.append(tr)}wrap.append(table);leaderboard.append(wrap)}}
+ const quality=$('strategy-entry-quality');if(quality){quality.replaceChildren();const scores=closed.filter(t=>Number.isFinite(t.setupScore));const spreads=closed.filter(t=>Number.isFinite(t.entrySpreadPct));const p=document.createElement('p');p.className='muted';p.textContent='Entry setup scores recorded: '+scores.length+'/'+closed.length+' • Entry spread measurements recorded: '+spreads.length+'/'+closed.length+'. Setup tier and entry hour comparisons are available in Performance. Missing quote histories and liquidity snapshots prevent a defensible entry-quality optimization.';quality.append(p)}
+}
 function renderPerformance(rows){
  const closed=rows.filter(x=>Number.isFinite(x.exit)&&Number.isFinite(x.entry)&&x.entry>0);
  const wins=closed.filter(x=>x.exit>x.entry);
@@ -173,7 +181,7 @@ function renderPerformance(rows){
 }
 function renderJournal(){
  const rows=journalRead(),closed=rows.filter(x=>Number.isFinite(x.exit));
- renderPerformance(rows);
+ renderPerformance(rows);renderStrategyLab(rows);
  const pnl=closed.reduce((n,x)=>n+(x.exit-x.entry)*100,0);const average=closed.length?pnl/closed.length:0;let equity=0,peak=0,drawdown=0;for(const x of [...closed].sort((a,b)=>Date.parse(a.closedAt||a.createdAt)-Date.parse(b.closedAt||b.createdAt))){equity+=(x.exit-x.entry)*100;peak=Math.max(peak,equity);drawdown=Math.max(drawdown,peak-equity)}
  const byTier=['High Conviction','Actionable','Watchlist','Developing','Unrated'].map(tier=>{const group=closed.filter(x=>(x.setupTier||'Unrated')===tier);return group.length?tier+': '+group.length+' closed, '+(100*group.filter(x=>x.exit>x.entry).length/group.length).toFixed(0)+'% wins, '+money(group.reduce((sum,x)=>sum+(x.exit-x.entry)*100,0))+' P/L':null}).filter(Boolean);
  $('journal-stats').textContent=rows.length+' tracked • '+closed.length+' closed • '+(closed.length?(100*closed.filter(x=>x.exit>x.entry).length/closed.length).toFixed(0)+'% win rate • ':'')+'Realized P/L '+(pnl>=0?'+':'')+money(pnl)+' • Avg/trade '+money(average)+' • Max drawdown '+money(drawdown)+(byTier.length?' | By entry tier: '+byTier.join(' • '):'');
@@ -394,7 +402,7 @@ setTimeout(()=>{$('paper-sync').click()},2000);
 
 
 // Page navigation keeps existing panels mounted so live data and event handlers remain intact.
-const appPages=['home','research','scanner','monitor','opportunities','performance','paper','settings'];
+const appPages=['home','research','scanner','monitor','opportunities','performance','strategy','paper','settings'];
 function showAppPage(name,historyMode='push'){
  const page=appPages.includes(name)?name:'home';
  for(const el of document.querySelectorAll('.app-page'))el.hidden=el.dataset.page!==page;
