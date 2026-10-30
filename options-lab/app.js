@@ -311,3 +311,20 @@ $('paper-import-file').onchange=async()=>{
  }catch(e){alert('Restore failed: '+e.message)}
  finally{input.value=''}
 };
+
+$('paper-sync').onclick=async()=>{
+ const button=$('paper-sync');button.disabled=true;
+ try{
+  const local=journalRead();
+  const remote=await api('/api/paper-journal');
+  const serverIds=new Set(remote.trades.map(t=>t.id));
+  const missing=local.filter(t=>!serverIds.has(t.id));
+  if(missing.length)await api('/api/paper-journal',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({trades:missing})});
+  const refreshed=await api('/api/paper-journal');
+  const merged=new Map(local.map(t=>[t.id,t]));
+  for(const t of refreshed.trades)if(!merged.has(t.id))merged.set(t.id,t);
+  journalWrite([...merged.values()]);
+  $('journal-storage-status').textContent='Database sync complete • '+refreshed.trades.length+' saved server-side • Existing records preserved. Changes still require Sync to be saved remotely.';
+ }catch(e){$('journal-storage-status').textContent='Sync failed: '+e.message+' • Your local journal remains intact.'}
+ finally{button.disabled=false}
+};
