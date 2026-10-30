@@ -3,6 +3,7 @@ import {readFile} from 'node:fs/promises';
 import {screenContract,scoreContract,scoreSetup} from './risk.mjs';
 import {initJournal,listJournal,mergeJournal,deleteJournal,closePaperTrade} from './paper-journal.mjs';
 import {paperExitDecision,paperEntryCandidate} from './paper-strategy.mjs';
+import {performanceMetrics} from './performance.mjs';
 let journalReady=false;
 initJournal().then(ready=>{journalReady=ready;console.log('Paper journal database:',ready?'ready':'not configured')}).catch(error=>console.error('Paper journal initialization failed:',error.message));
 const base=process.env.MARKET_DESK_BACKEND_URL||'https://market-desk-paper-scanner.onrender.com';
@@ -138,6 +139,10 @@ if(u.pathname==='/api/paper-journal'){
   const result=await mergeJournal(JSON.parse(raw).trades);
   return send(res,200,{...result,durable:true});
  }
+}
+if(req.method==='GET'&&u.pathname==='/api/performance'){
+ if(!journalReady)return send(res,503,{error:'Paper journal database not ready'});
+ return send(res,200,{...performanceMetrics(await listJournal()),source:'postgres',hypothetical:true,notice:'One-contract hypothetical premiums before fees and slippage. No actual orders.'});
 }
 if(req.method==='GET'&&u.pathname==='/api/monitor'){
  return send(res,200,{...scanState,paperExits:paperExitStatus,storage:{paperJournal:journalReady?'postgres':'browser-only',durable:journalReady},notice:'Intraday breakout and volume filters with two-scan confirmation. No live trade execution, guaranteed fills, persistent paper fills or closed-app push. Scan state resets when server restarts.'});
