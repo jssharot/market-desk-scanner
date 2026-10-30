@@ -8,7 +8,7 @@ export async function initJournal(){
  return true;
 }
 function validate(t){
- if(!t||typeof t!=='object'||Array.isArray(t)||typeof t.id!=='string'||t.id.length<1||t.id.length>160||!/^[A-Z]{1,5}$/.test(t.symbol)||!['call','put'].includes(t.side)||!/^\\d{4}-\\d{2}-\\d{2}$/.test(t.expiry)||!Number.isFinite(t.strike)||t.strike<=0||!Number.isFinite(t.entry)||t.entry<=0||t.entry>10||!Number.isFinite(Date.parse(t.createdAt)))throw Error('Invalid paper trade');
+ if(!t||typeof t!=='object'||Array.isArray(t)||typeof t.id!=='string'||t.id.length<1||t.id.length>160||!/^[A-Z]{1,5}$/.test(t.symbol)||!['call','put'].includes(t.side)||!/^\d{4}-\d{2}-\d{2}$/.test(t.expiry)||!Number.isFinite(t.strike)||t.strike<=0||!Number.isFinite(t.entry)||t.entry<=0||t.entry>10||!Number.isFinite(Date.parse(t.createdAt)))throw Error('Invalid paper trade');
  if(t.exit!==undefined&&t.exit!==null&&(!Number.isFinite(t.exit)||t.exit<0))throw Error('Invalid paper exit');
  return t;
 }
@@ -40,4 +40,12 @@ export async function deleteJournal(ids){
  if(!ids.length)return {deleted:0};
  const result=await pool.query('DELETE FROM paper_trades WHERE trade_id = ANY($1::text[])',[ids]);
  return {deleted:result.rowCount};
+}
+
+export async function closePaperTrade(id,exit,reason,quoteTime){
+ if(!pool)throw Error('Journal database not configured');
+ if(typeof id!=='string'||!Number.isFinite(exit)||exit<0)throw Error('Invalid paper close');
+ const closedAt=new Date().toISOString();
+ const result=await pool.query(`UPDATE paper_trades SET payload=jsonb_set(payload,'{exit}',to_jsonb($2::numeric),true) || jsonb_build_object('closedAt',$3::text,'exitReason',$4::text,'exitQuoteTime',$5::text,'exitAssumption','Bid quote, hypothetical; no execution verified'),updated_at=now() WHERE trade_id=$1 AND NOT (payload ? 'exit') RETURNING trade_id`,[id,exit,closedAt,reason,quoteTime]);
+ return result.rowCount>0;
 }
