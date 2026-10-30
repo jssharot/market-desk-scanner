@@ -323,7 +323,7 @@ $('paper-sync').onclick=async()=>{
   if(missing.length)await api('/api/paper-journal',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({trades:missing})});
   const refreshed=await api('/api/paper-journal');
   const merged=new Map(local.map(t=>[t.id,t]));
-  for(const t of refreshed.trades)if(!merged.has(t.id)&&!deleted.includes(t.id))merged.set(t.id,t);
+  for(const t of refreshed.trades)if(!deleted.includes(t.id)&&(!merged.has(t.id)||(Number.isFinite(t.exit)&&!Number.isFinite(merged.get(t.id).exit))))merged.set(t.id,t);
   localStorage.setItem(journalKey,JSON.stringify([...merged.values()]));if(deleted.length)localStorage.removeItem('olab-paper-deleted-v1');renderJournal();
   $('journal-storage-status').textContent='Database sync complete • '+refreshed.trades.length+' saved server-side • Existing records preserved. Automatic sync enabled for new entries and updates.';
  }catch(e){$('journal-storage-status').textContent='Sync failed: '+e.message+' • Your local journal remains intact.'}
