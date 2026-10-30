@@ -63,7 +63,8 @@ async function backgroundScan(){
   }
   scanState.alerts=scanState.alerts.slice(0,40);
   scanState.lastRun=checkedAt;scanState.lastError=null;
-  scanState.history.unshift({checkedAt,candidates:scanState.candidates.length});scanState.history=scanState.history.slice(0,100);
+  const tiers=Object.fromEntries(['High Conviction','Actionable','Watchlist','Developing'].map(t=>[t,scanState.candidates.filter(c=>c.setup?.tier===t).length]));
+  scanState.history.unshift({checkedAt,candidates:scanState.candidates.length,confirmed:scanState.confirmed.length,tiers});scanState.history=scanState.history.slice(0,100);
  }catch(e){scanState.lastError=e.message}
  finally{scanState.running=false}
 }
@@ -75,7 +76,7 @@ if(!access)return send(res,503,{error:'Access not configured'});
 if(req.headers['x-options-lab-key']!==access)return send(res,401,{error:'Unauthorized'});
 try{
 if(req.method==='GET'&&u.pathname==='/api/monitor'){
- return send(res,200,{...scanState,notice:'Intraday breakout and volume filters with two-scan confirmation. No live trade execution, guaranteed fills, persistent paper fills or closed-app push. Scan state resets when server restarts.'});
+ return send(res,200,{...scanState,storage:{paperJournal:'browser-only',durable:false},notice:'Intraday breakout and volume filters with two-scan confirmation. No live trade execution, guaranteed fills, persistent paper fills or closed-app push. Scan state resets when server restarts.'});
 }
 if(req.method==='GET'&&u.pathname==='/api/scanner'){
  const active=await upstream('/most-active');
