@@ -2,6 +2,7 @@ import {createServer} from 'node:http';
 import {readFile} from 'node:fs/promises';
 import {screenContract,scoreContract,scoreSetup} from './risk.mjs';
 import {initJournal,listJournal,mergeJournal,deleteJournal,closePaperTrade} from './paper-journal.mjs';
+import {paperExitDecision,paperEntryCandidate} from './paper-strategy.mjs';
 let journalReady=false;
 initJournal().then(ready=>{journalReady=ready;console.log('Paper journal database:',ready?'ready':'not configured')}).catch(error=>console.error('Paper journal initialization failed:',error.message));
 const base=process.env.MARKET_DESK_BACKEND_URL||'https://market-desk-paper-scanner.onrender.com';
@@ -66,12 +67,10 @@ async function backgroundScan(){
     const existingIds=new Set(existing.map(t=>t.id));
     const entries=[];
     for(const c of scanState.confirmed){
-     const id='server-auto-'+c.id+'-'+checkedAt.slice(0,10);
-     if(existingIds.has(id)||!['High Conviction','Actionable'].includes(c.setup?.tier))continue;
-     if(!Number.isFinite(c.ask)||c.ask<=0||c.ask*100>1000||!Number.isFinite(c.bid)||c.bid<=0||!Number.isFinite(c.spreadPct)||c.spreadPct>15)continue;
-     const age=Date.now()-Date.parse(c.quoteTime);
-     if(!Number.isFinite(age)||age< -5000||age>30000)continue;
-     entries.push({id,symbol:c.symbol,side:c.side,expiry:c.expiry,strike:c.strike,entry:c.ask,createdAt:checkedAt,auto:true,source:'server-confirmed-breakout',setupScore:c.setup.score,setupTier:c.setup.tier,entryQuoteTime:c.quoteTime,entryAssumption:'Quoted ask, hypothetical one-contract entry; no execution verified'});
+     const entry=paperEntryCandidate(c,existingIds,checkedAt);
+     if(!entry)continue;
+     entries.push(entry);
+     const id=entry.id;
      existingIds.add(id);
      if(entries.length>=3)break;
     }
@@ -110,10 +109,7 @@ async function monitorPaperExits(){
     const chain=await upstream(q.pathname+q.search);
     const contract=(chain.contracts||[]).find(c=>Math.abs(Number(c.strike)-Number(trade.strike))<0.001);
     if(!contract||!Number.isFinite(contract.bid)||contract.bid<0||!Number.isFinite(contract.bidSize)||contract.bidSize<1)continue;
-    const age=Date.now()-Date.parse(contract.quoteTime);
-    if(!Number.isFinite(age)||age< -5000||age>30000)continue;
-    const pct=(contract.bid/trade.entry-1)*100;
-    const reason=pct<=-30?'Paper stop (-30%)':pct>=50?'Paper target (+50%)':null;
+    const reason=paperExitDecision(trade,contract);
     checked++;
     if(reason&&await closePaperTrade(trade.id,contract.bid,reason,contract.quoteTime))closed++;
    }catch{}
