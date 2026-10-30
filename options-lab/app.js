@@ -134,7 +134,8 @@ $('scan-watchlist').onclick=async()=>{
 };
 const journalKey='olab-paper-journal-v1';
 function journalRead(){try{return JSON.parse(localStorage.getItem(journalKey)||'[]')}catch{return []}}
-function journalWrite(rows){localStorage.setItem(journalKey,JSON.stringify(rows));renderJournal()}
+function journalWrite(rows){localStorage.setItem(journalKey,JSON.stringify(rows));localStorage.setItem('olab-paper-last-change',new Date().toISOString());renderJournal()}
+function journalStorageStatus(){const el=$('journal-storage-status');if(el)el.textContent='Storage: this browser only • Server persistence not configured • Export a JSON backup to protect your history.'}
 function renderJournal(){
  const rows=journalRead(),closed=rows.filter(x=>Number.isFinite(x.exit));
  const pnl=closed.reduce((n,x)=>n+(x.exit-x.entry)*100,0);const average=closed.length?pnl/closed.length:0;let equity=0,peak=0,drawdown=0;for(const x of [...closed].sort((a,b)=>Date.parse(a.closedAt||a.createdAt)-Date.parse(b.closedAt||b.createdAt))){equity+=(x.exit-x.entry)*100;peak=Math.max(peak,equity);drawdown=Math.max(drawdown,peak-equity)}
@@ -156,7 +157,7 @@ function renderJournal(){
   td.append(b);tr.append(td);return tr;
  }));
 }
-renderJournal();
+renderJournal();journalStorageStatus();
 $('scan-options').onclick=async()=>{
  $('scan-options').disabled=true;$('opportunities-status').textContent='Checking active stocks and live option chains…';
  try{
