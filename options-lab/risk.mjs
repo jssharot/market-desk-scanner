@@ -63,10 +63,11 @@ export function scoreSetup({quoteScore,changePercent,volumeRatio=null,breakoutCo
   const quality=35*clamp(quoteScore/100,0,1);
   const raw=Math.round(momentum+volume+breakout+quality);
   // Without independently confirmed intraday volume and breakout, never label a trade high conviction.
-  const score=breakoutConfirmed&&Number.isFinite(volumeRatio)?raw:Math.min(raw,79);
+  const confirmed=breakoutConfirmed&&Number.isFinite(volumeRatio)&&volumeRatio>=1.3;
+  const score=confirmed?raw:Math.min(raw,79);
   const tier=score>=80?'High Conviction':score>=65?'Actionable':score>=45?'Watchlist':'Developing';
   return {score,tier,direction:changePercent>0?'call':changePercent<0?'put':null,
-    confirmation:breakoutConfirmed&&Number.isFinite(volumeRatio)?'technical-confirmed':'momentum-only',
+    confirmation:confirmed?'technical-confirmed':Number.isFinite(volumeRatio)?'volume-observed-unconfirmed':'momentum-only',
     factors:[{name:'Option quote quality',points:Math.round(quality)},
       {name:'Stock momentum',points:Math.round(momentum)},
       {name:'Relative bar volume',points:Math.round(volume)},
