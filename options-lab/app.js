@@ -136,8 +136,25 @@ const journalKey='olab-paper-journal-v1';
 function journalRead(){try{return JSON.parse(localStorage.getItem(journalKey)||'[]')}catch{return []}}
 function journalWrite(rows){localStorage.setItem(journalKey,JSON.stringify(rows));localStorage.setItem('olab-paper-last-change',new Date().toISOString());renderJournal();scheduleJournalSync()}
 function journalStorageStatus(){const el=$('journal-storage-status');if(el)el.textContent='Local journal active • Database sync runs automatically after changes.'}
+function renderPerformance(rows){
+ const closed=rows.filter(x=>Number.isFinite(x.exit)&&Number.isFinite(x.entry)&&x.entry>0);
+ const wins=closed.filter(x=>x.exit>x.entry);
+ const open=rows.filter(x=>!Number.isFinite(x.exit));
+ const pnl=x=>(x.exit-x.entry)*100;
+ const net=closed.reduce((n,x)=>n+pnl(x),0);
+ const grossWin=closed.reduce((n,x)=>n+Math.max(0,pnl(x)),0);
+ const grossLoss=closed.reduce((n,x)=>n+Math.max(0,-pnl(x)),0);
+ const pct=closed.length?(100*wins.length/closed.length).toFixed(1)+'%':'—';
+ const factor=!closed.length||!grossLoss?'—':(grossWin/grossLoss).toFixed(2);
+ const cells=[['Tracked',rows.length],['Open',open.length],['Closed',closed.length],['Win rate',pct],['Net simulated P/L',(net>=0?'+':'')+money(net)],['Avg closed trade',closed.length?money(net/closed.length):'—'],['Profit factor',factor]];
+ const root=$('performance-kpis');if(root){root.replaceChildren(...cells.map(([label,value])=>{const div=document.createElement('div');div.className='performance-kpi';const l=document.createElement('small');l.textContent=label;const v=document.createElement('strong');v.textContent=value;div.append(l,v);return div}))}
+ const groups=new Map();for(const x of closed){const tier=x.setupTier||'Unrated';if(!groups.has(tier))groups.set(tier,[]);groups.get(tier).push(x)}
+ const body=$('performance-tiers');if(body)body.replaceChildren(...[...groups].map(([tier,items])=>{const tr=document.createElement('tr');const total=items.reduce((n,x)=>n+pnl(x),0);for(const v of [tier,String(items.length),(100*items.filter(x=>x.exit>x.entry).length/items.length).toFixed(1)+'%',(total>=0?'+':'')+money(total)]){const td=document.createElement('td');td.textContent=v;tr.append(td)}return tr}));
+ const note=$('performance-note');if(note)note.textContent=closed.length?'Hypothetical one-contract returns based on recorded option premiums, before fees and slippage. '+(closed.length<30?'Early sample: fewer than 30 closed trades.':'Results are historical simulations, not a forecast.'):'No closed simulated trades yet. Metrics will populate from your synced journal.';
+}
 function renderJournal(){
  const rows=journalRead(),closed=rows.filter(x=>Number.isFinite(x.exit));
+ renderPerformance(rows);
  const pnl=closed.reduce((n,x)=>n+(x.exit-x.entry)*100,0);const average=closed.length?pnl/closed.length:0;let equity=0,peak=0,drawdown=0;for(const x of [...closed].sort((a,b)=>Date.parse(a.closedAt||a.createdAt)-Date.parse(b.closedAt||b.createdAt))){equity+=(x.exit-x.entry)*100;peak=Math.max(peak,equity);drawdown=Math.max(drawdown,peak-equity)}
  const byTier=['High Conviction','Actionable','Watchlist','Developing','Unrated'].map(tier=>{const group=closed.filter(x=>(x.setupTier||'Unrated')===tier);return group.length?tier+': '+group.length+' closed, '+(100*group.filter(x=>x.exit>x.entry).length/group.length).toFixed(0)+'% wins, '+money(group.reduce((sum,x)=>sum+(x.exit-x.entry)*100,0))+' P/L':null}).filter(Boolean);
  $('journal-stats').textContent=rows.length+' tracked • '+closed.length+' closed • '+(closed.length?(100*closed.filter(x=>x.exit>x.entry).length/closed.length).toFixed(0)+'% win rate • ':'')+'Realized P/L '+(pnl>=0?'+':'')+money(pnl)+' • Avg/trade '+money(average)+' • Max drawdown '+money(drawdown)+(byTier.length?' | By entry tier: '+byTier.join(' • '):'');
