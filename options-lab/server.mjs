@@ -1,7 +1,7 @@
 import {createServer} from 'node:http';
 import {readFile} from 'node:fs/promises';
 import {screenContract,scoreContract,scoreSetup} from './risk.mjs';
-import {initJournal,listJournal,mergeJournal,deleteJournal,closePaperTrade,saveScannerDiagnostic,listScannerDiagnostics,recordPaperQuote,paperQuoteCoverage} from './paper-journal.mjs';
+import {initJournal,listJournal,mergeJournal,deleteJournal,closePaperTrade,saveScannerDiagnostic,listScannerDiagnostics,recordPaperQuote,paperQuoteCoverage,paperQuoteQuality,replayObservedQuotes} from './paper-journal.mjs';
 import {paperExitDecision,paperEntryCandidate} from './paper-strategy.mjs';
 import {performanceMetrics} from './performance.mjs';
 let journalReady=false;
@@ -165,6 +165,14 @@ if(u.pathname==='/api/paper-journal'){
   const result=await mergeJournal(JSON.parse(raw).trades);
   return send(res,200,{...result,durable:true});
  }
+}
+if(req.method==='GET'&&u.pathname==='/api/strategy-quality'){
+ if(!journalReady)return send(res,503,{error:'Paper journal database not ready'});
+ return send(res,200,{quality:await paperQuoteQuality(),sampledEverySeconds:60,notice:'Missing samples and gaps cannot be reconstructed.'});
+}
+if(req.method==='GET'&&u.pathname==='/api/strategy-replay'){
+ if(!journalReady)return send(res,503,{error:'Paper journal database not ready'});
+ return send(res,200,await replayObservedQuotes());
 }
 if(req.method==='GET'&&u.pathname==='/api/strategy-coverage'){
  if(!journalReady)return send(res,503,{error:'Paper journal database not ready'});
