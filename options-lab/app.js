@@ -136,6 +136,24 @@ const journalKey='olab-paper-journal-v1';
 function journalRead(){try{return JSON.parse(localStorage.getItem(journalKey)||'[]')}catch{return []}}
 function journalWrite(rows){localStorage.setItem(journalKey,JSON.stringify(rows));localStorage.setItem('olab-paper-last-change',new Date().toISOString());renderJournal();scheduleJournalSync()}
 function journalStorageStatus(){const el=$('journal-storage-status');if(el)el.textContent='Local journal active • Database sync runs automatically after changes.'}
+function renderPerformanceDetail(closed){
+ const root=$('performance-breakdowns');if(root){root.replaceChildren();
+  const dimensions=[['Ticker',t=>t.symbol],['Call / put',t=>t.side],['Entry hour ET',t=>{const d=new Date(t.createdAt);return Number.isFinite(d.getTime())?new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',hour:'2-digit',hourCycle:'h23'}).format(d)+':00':'Unknown'}],['Exit reason',t=>t.exitReason||'Unrecorded']];
+  for(const [label,key] of dimensions){const heading=document.createElement('h4');heading.textContent=label;root.append(heading);const groups=new Map();for(const t of closed){const k=String(key(t)||'Unknown');if(!groups.has(k))groups.set(k,[]);groups.get(k).push(t)}
+   if(!groups.size){const empty=document.createElement('p');empty.className='muted';empty.textContent='No closed trades yet';root.append(empty);continue}
+   const scroll=document.createElement('div');scroll.className='table-scroll';const table=document.createElement('table');const thead=document.createElement('thead');const hr=document.createElement('tr');for(const name of ['Group','Closed','Win rate','Avg P/L','Net P/L']){const th=document.createElement('th');th.textContent=name;hr.append(th)}thead.append(hr);table.append(thead);const body=document.createElement('tbody');
+   for(const [name,items] of [...groups].sort((a,b)=>b[1].length-a[1].length).slice(0,12)){const pnl=items.reduce((n,t)=>n+(t.exit-t.entry)*100,0);const tr=document.createElement('tr');for(const value of [name,items.length,(100*items.filter(t=>t.exit>t.entry).length/items.length).toFixed(1)+'%',money(pnl/items.length),money(pnl)]){const td=document.createElement('td');td.textContent=String(value);tr.append(td)}body.append(tr)}table.append(body);scroll.append(table);root.append(scroll)
+  }
+ }
+ const review=$('performance-trade-reviews');if(review){review.replaceChildren();if(!closed.length){review.textContent='No completed hypothetical trades to review.';return}
+  for(const t of [...closed].sort((a,b)=>Date.parse(b.closedAt||b.createdAt)-Date.parse(a.closedAt||a.createdAt)).slice(0,20)){
+   const profit=(t.exit-t.entry)*100;const pct=(t.exit/t.entry-1)*100;const grade=pct>=50?'A':pct>0?'B':pct===0?'C':pct>-30?'D':'F';
+   const item=document.createElement('div');item.className='card';const title=document.createElement('strong');title.textContent=grade+' · '+t.symbol+' '+String(t.side||'').toUpperCase()+' · '+money(profit)+' ('+pct.toFixed(1)+'%)';const detail=document.createElement('p');detail.className='muted';
+   const setup=t.setupTier?'Setup: '+t.setupTier+'. ':'Setup quality not recorded. ';const exit=t.exitReason?'Recorded exit: '+t.exitReason+'. ':'Exit reason not recorded. ';const caution='Outcome grade only; no intratrade price path or verified execution data to assess entry/exit timing.';
+   detail.textContent=setup+exit+(profit<0?'Loss flagged for strategy review. ':profit>0?'Profitable outcome; repeatability unproven. ':'Flat outcome. ')+caution;item.append(title,detail);review.append(item)
+  }
+ }
+}
 function renderPerformance(rows){
  const closed=rows.filter(x=>Number.isFinite(x.exit)&&Number.isFinite(x.entry)&&x.entry>0);
  const wins=closed.filter(x=>x.exit>x.entry);
@@ -150,6 +168,7 @@ function renderPerformance(rows){
  const root=$('performance-kpis');if(root){root.replaceChildren(...cells.map(([label,value])=>{const div=document.createElement('div');div.className='performance-kpi';const l=document.createElement('small');l.textContent=label;const v=document.createElement('strong');v.textContent=value;div.append(l,v);return div}))}
  const groups=new Map();for(const x of closed){const tier=x.setupTier||'Unrated';if(!groups.has(tier))groups.set(tier,[]);groups.get(tier).push(x)}
  const body=$('performance-tiers');if(body)body.replaceChildren(...[...groups].map(([tier,items])=>{const tr=document.createElement('tr');const total=items.reduce((n,x)=>n+pnl(x),0);for(const v of [tier,String(items.length),(100*items.filter(x=>x.exit>x.entry).length/items.length).toFixed(1)+'%',(total>=0?'+':'')+money(total)]){const td=document.createElement('td');td.textContent=v;tr.append(td)}return tr}));
+ renderPerformanceDetail(closed);
  const note=$('performance-note');if(note)note.textContent=closed.length?'Hypothetical one-contract returns based on recorded option premiums, before fees and slippage. '+(closed.length<30?'Early sample: fewer than 30 closed trades.':'Results are historical simulations, not a forecast.'):'No closed simulated trades yet. Metrics will populate from your synced journal.';
 }
 function renderJournal(){
