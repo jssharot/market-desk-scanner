@@ -103,8 +103,10 @@ if(req.method==='GET'&&u.pathname==='/api/opportunities'){
    const ex=await upstream(e.pathname+e.search);
    const dates=ex.expirations||[];
    const now=Date.now();
-   const today=new Date(now).toISOString().slice(0,10);
-   const expiryDate=dates.find(d=>{const days=(Date.parse(d+'T12:00:00Z')-Date.parse(today+'T12:00:00Z'))/86400000;return days>=0&&days<=10});
+   const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(now));
+   const et=Object.fromEntries(parts.map(p=>[p.type,p.value]));
+   const today=`${et.year}-${et.month}-${et.day}`;
+   const expiryDate=dates.find(d=>{if(typeof d!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(d))return false;const days=(Date.parse(d+'T12:00:00Z')-Date.parse(today+'T12:00:00Z'))/86400000;return days>=0&&days<=10});
    if(!expiryDate)return {symbol:stock.symbol,changePercent:stock.changePercent,reason:'No expiration within 10 days',contracts:[]};
    const chains=await Promise.all(['call','put'].map(async side=>{const c=new URL('/chain',base);Object.entries({symbol:stock.symbol,expiry:expiryDate,side}).forEach(([k,v])=>c.searchParams.set(k,v));try{return {side,data:await upstream(c.pathname+c.search)}}catch{return {side,data:{contracts:[]}}}}));
    const contracts=chains.flatMap(({side,data})=>(data.contracts||[]).map(c=>({...c,side,expiry:expiryDate,screen:screenContract({...c,expiry:expiryDate})}))).filter(c=>c.screen.eligible).sort((a,b)=>a.screen.spreadPct-b.screen.spreadPct||Math.abs(a.strike-stock.price)-Math.abs(b.strike-stock.price)).slice(0,4);
@@ -137,9 +139,9 @@ if(req.method==='GET'&&u.pathname==='/api/paper-quote'){
  const q=new URL('/chain',base);for(const [k,v] of Object.entries({symbol:sym,expiry:date,side}))q.searchParams.set(k,v);
  const chain=await upstream(q.pathname+q.search);
  const c=(chain.contracts||[]).find(x=>Math.abs(Number(x.strike)-strike)<0.001);
- if(!c||!Number.isFinite(Number(c.bid))||Number(c.bid)<0)return send(res,200,{available:false,reason:'No valid bid'});
+ if(!c||!Number.isFinite(c.bid)||c.bid<=0||!Number.isFinite(c.ask)||c.ask<c.bid||!Number.isFinite(c.bidSize)||c.bidSize<=0||!Number.isFinite(c.askSize)||c.askSize<=0)return send(res,200,{available:false,reason:'Incomplete or invalid option quote'});
  const age=Date.now()-Date.parse(c.quoteTime);
- return send(res,200,{available:Number.isFinite(age)&&age>=0&&age<=30000&&Number(c.bidSize)>0,bid:Number(c.bid),ask:Number(c.ask),quoteTime:c.quoteTime,bidSize:Number(c.bidSize),ageMs:age,source:'Alpaca OPRA; indicative, not executable'});
+ return send(res,200,{available:Number.isFinite(age)&&age>=-5000&&age<=30000,bid:c.bid,ask:c.ask,quoteTime:c.quoteTime,bidSize:c.bidSize,ageMs:age,source:'Alpaca OPRA; indicative, not executable'});
 }
 if(req.method==='GET'&&u.pathname==='/api/chain'){const sym=symbol(u.searchParams.get('symbol')),date=expiry(u.searchParams.get('expiry')),side=u.searchParams.get('side');if(!['call','put'].includes(side))throw Error('Invalid side');const q=new URL('/chain',base);for(const [k,v] of Object.entries({symbol:sym,expiry:date,side}))q.searchParams.set(k,v);const j=await upstream(q.pathname+q.search);return send(res,200,{...j,screened:(j.contracts||[]).map(c=>({...c,screen:screenContract({...c,expiry:date})}))})}
 return send(res,404,{error:'Not found'})
