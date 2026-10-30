@@ -26,7 +26,7 @@ export async function mergeJournal(trades){
   await client.query('BEGIN');
   let inserted=0;
   for(const t of rows){
-   const result=await client.query('INSERT INTO paper_trades(trade_id,payload) VALUES ($1,$2::jsonb) ON CONFLICT (trade_id) DO NOTHING RETURNING trade_id',[t.id,JSON.stringify(t)]);
+   const result=await client.query('INSERT INTO paper_trades(trade_id,payload) VALUES ($1,$2::jsonb) ON CONFLICT (trade_id) DO UPDATE SET payload=EXCLUDED.payload, updated_at=now() RETURNING trade_id',[t.id,JSON.stringify(t)]);
    inserted+=result.rowCount;
   }
   await client.query('COMMIT');
