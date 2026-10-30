@@ -134,8 +134,8 @@ $('scan-watchlist').onclick=async()=>{
 };
 const journalKey='olab-paper-journal-v1';
 function journalRead(){try{return JSON.parse(localStorage.getItem(journalKey)||'[]')}catch{return []}}
-function journalWrite(rows){localStorage.setItem(journalKey,JSON.stringify(rows));localStorage.setItem('olab-paper-last-change',new Date().toISOString());renderJournal()}
-function journalStorageStatus(){const el=$('journal-storage-status');if(el)el.textContent='Storage: this browser only • Server persistence not configured • Export a JSON backup to protect your history.'}
+function journalWrite(rows){localStorage.setItem(journalKey,JSON.stringify(rows));localStorage.setItem('olab-paper-last-change',new Date().toISOString());renderJournal();scheduleJournalSync()}
+function journalStorageStatus(){const el=$('journal-storage-status');if(el)el.textContent='Local journal active • Database sync runs automatically after changes.'}
 function renderJournal(){
  const rows=journalRead(),closed=rows.filter(x=>Number.isFinite(x.exit));
  const pnl=closed.reduce((n,x)=>n+(x.exit-x.entry)*100,0);const average=closed.length?pnl/closed.length:0;let equity=0,peak=0,drawdown=0;for(const x of [...closed].sort((a,b)=>Date.parse(a.closedAt||a.createdAt)-Date.parse(b.closedAt||b.createdAt))){equity+=(x.exit-x.entry)*100;peak=Math.max(peak,equity);drawdown=Math.max(drawdown,peak-equity)}
@@ -318,13 +318,17 @@ $('paper-sync').onclick=async()=>{
   const local=journalRead();
   const remote=await api('/api/paper-journal');
   const serverIds=new Set(remote.trades.map(t=>t.id));
-  const missing=local.filter(t=>!serverIds.has(t.id));
+  const missing=local;
   if(missing.length)await api('/api/paper-journal',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({trades:missing})});
   const refreshed=await api('/api/paper-journal');
   const merged=new Map(local.map(t=>[t.id,t]));
   for(const t of refreshed.trades)if(!merged.has(t.id))merged.set(t.id,t);
-  journalWrite([...merged.values()]);
-  $('journal-storage-status').textContent='Database sync complete • '+refreshed.trades.length+' saved server-side • Existing records preserved. Changes still require Sync to be saved remotely.';
+  localStorage.setItem(journalKey,JSON.stringify([...merged.values()]));renderJournal();
+  $('journal-storage-status').textContent='Database sync complete • '+refreshed.trades.length+' saved server-side • Existing records preserved. Automatic sync enabled for new entries and updates.';
  }catch(e){$('journal-storage-status').textContent='Sync failed: '+e.message+' • Your local journal remains intact.'}
  finally{button.disabled=false}
 };
+
+let journalSyncTimer;
+function scheduleJournalSync(){clearTimeout(journalSyncTimer);journalSyncTimer=setTimeout(()=>{$('paper-sync').click()},900)}
+setTimeout(()=>{$('paper-sync').click()},2000);
