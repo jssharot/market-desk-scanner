@@ -4,6 +4,8 @@ const pool=process.env.DATABASE_URL?new Pool({connectionString:process.env.DATAB
 export const journalConfigured=()=>!!pool;
 export async function initJournal(){
  if(!pool)return false;
+ await pool.query(`CREATE TABLE IF NOT EXISTS paper_quote_samples (trade_id text NOT NULL, quote_time timestamptz NOT NULL, bid numeric NOT NULL CHECK (bid>=0), ask numeric, bid_size numeric, recorded_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (trade_id,quote_time))`);
+ await pool.query(`CREATE INDEX IF NOT EXISTS paper_quote_samples_trade_time_idx ON paper_quote_samples (trade_id,quote_time)`);
  await pool.query(`CREATE TABLE IF NOT EXISTS scanner_diagnostics (id bigserial PRIMARY KEY, checked_at timestamptz NOT NULL DEFAULT now(), payload jsonb NOT NULL)`);
  await pool.query(`CREATE TABLE IF NOT EXISTS paper_trades (trade_id text PRIMARY KEY, payload jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now())`);
  return true;
@@ -60,4 +62,18 @@ export async function listScannerDiagnostics(){
  if(!pool)return [];
  const r=await pool.query('SELECT payload FROM scanner_diagnostics ORDER BY id DESC LIMIT 100');
  return r.rows.map(x=>x.payload);
+}
+
+export async function recordPaperQuote(tradeId,quote){
+ if(!pool)throw Error('Journal database not configured');
+ if(typeof tradeId!=='string'||tradeId.length>160||!Number.isFinite(quote.bid)||quote.bid<0||!Number.isFinite(quote.bidSize)||quote.bidSize<1) return false;
+ const timestamp=Date.parse(quote.quoteTime);
+ if(!Number.isFinite(timestamp)||timestamp>Date.now()+5000||Date.now()-timestamp>30000)return false;
+ await pool.query('INSERT INTO paper_quote_samples(trade_id,quote_time,bid,ask,bid_size) VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING',[tradeId,new Date(timestamp),quote.bid,Number.isFinite(quote.ask)?quote.ask:null,quote.bidSize]);
+ return true;
+}
+export async function paperQuoteCoverage(){
+ if(!pool)throw Error('Journal database not configured');
+ const r=await pool.query('SELECT trade_id, count(*)::int AS samples, min(quote_time) AS first_quote, max(quote_time) AS last_quote FROM paper_quote_samples GROUP BY trade_id ORDER BY max(quote_time) DESC LIMIT 1000');
+ return r.rows.map(x=>({tradeId:x.trade_id,samples:x.samples,firstQuote:x.first_quote,lastQuote:x.last_quote}));
 }
