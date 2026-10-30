@@ -13,6 +13,19 @@ function send(res,status,data){res.writeHead(status,{'content-type':'application
 async function upstream(path){if(!secret)throw Error('Market Desk backend not configured');const r=await fetch(new URL(path,base),{headers:{Authorization:'Bearer '+secret},signal:AbortSignal.timeout(12000)});if(!r.ok)throw Error('Market Desk backend error '+r.status);return r.json()}
 function symbol(s){if(!/^[A-Z]{1,5}$/.test(s))throw Error('Invalid symbol');return s}
 function expiry(s){if(!/^\d{4}-\d{2}-\d{2}$/.test(s))throw Error('Invalid expiry');return s}
+const riskLimits={maxOpenPositions:Math.max(1,Math.min(20,Number(process.env.PAPER_MAX_OPEN_POSITIONS)||3)),maxDailyRealizedLoss:Math.max(100,Math.min(10000,Number(process.env.PAPER_MAX_DAILY_LOSS)||500)),lossStreakCooldown:Math.max(1,Math.min(10,Number(process.env.PAPER_LOSS_STREAK)||3))};
+function paperRiskStatus(trades,now=new Date()){
+ const today=new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(now);
+ const etDay=date=>new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(date));
+ const auto=trades.filter(t=>t.auto===true);
+ const open=auto.filter(t=>!Number.isFinite(t.exit)).length;
+ const closedToday=auto.filter(t=>Number.isFinite(t.exit)&&t.closedAt&&etDay(t.closedAt)===today);
+ const realizedPnl=closedToday.reduce((n,t)=>n+(t.exit-t.entry)*100,0);
+ const recent=[...closedToday].sort((a,b)=>Date.parse(b.closedAt)-Date.parse(a.closedAt));
+ let lossStreak=0;for(const t of recent){if(t.exit<t.entry)lossStreak++;else break}
+ const blocked=[];if(open>=riskLimits.maxOpenPositions)blocked.push('Maximum open positions');if(realizedPnl<=-riskLimits.maxDailyRealizedLoss)blocked.push('Daily realized loss limit');if(lossStreak>=riskLimits.lossStreakCooldown)blocked.push('Consecutive loss cooldown');
+ return {limits:riskLimits,open,realizedPnl,lossStreak,blocked,dayET:today,hypothetical:true};
+}
 const scanState={lastRun:null,lastError:null,lastAttempt:null,lastOutcome:'waiting',successfulScans:0,failedScans:0,candidates:[],running:false,history:[],confirmed:[],priorCandidates:[],alerts:[],rejections:{}};
 function easternNow(){const parts=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',weekday:'short',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date());const x=Object.fromEntries(parts.map(p=>[p.type,p.value]));return {weekday:x.weekday,minutes:Number(x.hour)*60+Number(x.minute)}}
 async function backgroundScan(){
@@ -74,14 +87,16 @@ async function backgroundScan(){
    try{
     const existing=await listJournal();
     const existingIds=new Set(existing.map(t=>t.id));
+    const risk=paperRiskStatus(existing);
     const entries=[];
     for(const c of scanState.confirmed){
+     if(risk.blocked.length||risk.open+entries.length>=riskLimits.maxOpenPositions)break;
      const entry=paperEntryCandidate(c,existingIds,checkedAt);
      if(!entry)continue;
      entries.push(entry);
      const id=entry.id;
      existingIds.add(id);
-     if(entries.length>=3)break;
+     if(entries.length>=riskLimits.maxOpenPositions)break;
     }
     if(entries.length)await mergeJournal(entries);
    }catch(e){console.error('Paper auto-entry failed:',e.message)}
@@ -149,6 +164,10 @@ if(u.pathname==='/api/paper-journal'){
   const result=await mergeJournal(JSON.parse(raw).trades);
   return send(res,200,{...result,durable:true});
  }
+}
+if(req.method==='GET'&&u.pathname==='/api/risk'){
+ if(!journalReady)return send(res,503,{error:'Paper journal database not ready'});
+ return send(res,200,paperRiskStatus(await listJournal()));
 }
 if(req.method==='GET'&&u.pathname==='/api/performance'){
  if(!journalReady)return send(res,503,{error:'Paper journal database not ready'});
