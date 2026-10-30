@@ -279,3 +279,31 @@ function updateAutoExitsButton(){autoExitsButton.textContent=localStorage.getIte
 autoExitsButton.onclick=()=>{localStorage.setItem('olab-auto-exits-enabled',String(localStorage.getItem('olab-auto-exits-enabled')!=='true'));updateAutoExitsButton();void checkPaperExits()};
 updateAutoExitsButton();
 void checkPaperExits();setInterval(checkPaperExits,60000);
+
+function downloadJournalFile(filename,content,type){
+ const url=URL.createObjectURL(new Blob([content],{type}));
+ const a=document.createElement('a');a.href=url;a.download=filename;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),3000);
+}
+$('paper-backup').onclick=()=>downloadJournalFile('options-lab-journal-'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify({version:1,exportedAt:new Date().toISOString(),trades:journalRead()},null,2),'application/json');
+$('paper-export').onclick=()=>{
+ const fields=['id','symbol','side','strike','expiry','entry','exit','createdAt','closedAt','exitReason','auto','entryAssumption','exitAssumption'];
+ const csv=[fields.join(','),...journalRead().map(t=>fields.map(k=>'"'+String(t[k]??'').replaceAll('"','""')+'"').join(','))].join('\r\n');
+ downloadJournalFile('options-lab-trades-'+new Date().toISOString().slice(0,10)+'.csv',csv,'text/csv');
+};
+$('paper-import').onclick=()=>$('paper-import-file').click();
+$('paper-import-file').onchange=async()=>{
+ const input=$('paper-import-file'),file=input.files?.[0];if(!file)return;
+ try{
+  if(file.size>2000000)throw Error('Backup file is too large');
+  const data=JSON.parse(await file.text());
+  if(data.version!==1||!Array.isArray(data.trades)||data.trades.length>10000)throw Error('Invalid Options Lab backup');
+  const valid=data.trades.every(t=>t&&typeof t.id==='string'&&/^[A-Z]{1,5}$/.test(t.symbol)&&['call','put'].includes(t.side)&&/^\d{4}-\d{2}-\d{2}$/.test(t.expiry)&&Number.isFinite(t.strike)&&t.strike>0&&Number.isFinite(t.entry)&&t.entry>0&&(t.exit===undefined||Number.isFinite(t.exit)&&t.exit>=0));
+  if(!valid)throw Error('Backup contains invalid trades');
+  if(!confirm('Restore '+data.trades.length+' trades? Existing trades with the same ID will be replaced.'))return;
+  const merged=new Map(journalRead().map(t=>[t.id,t]));
+  for(const t of data.trades)merged.set(t.id,t);
+  journalWrite([...merged.values()]);
+  alert('Journal restored. '+merged.size+' trades now saved on this device.');
+ }catch(e){alert('Restore failed: '+e.message)}
+ finally{input.value=''}
+};
