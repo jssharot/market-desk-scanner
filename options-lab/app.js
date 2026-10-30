@@ -342,7 +342,11 @@ $('paper-sync').onclick=async()=>{
   const merged=new Map(local.map(t=>[t.id,t]));
   for(const t of refreshed.trades)if(!deleted.includes(t.id)&&(!merged.has(t.id)||(Number.isFinite(t.exit)&&!Number.isFinite(merged.get(t.id).exit))))merged.set(t.id,t);
   localStorage.setItem(journalKey,JSON.stringify([...merged.values()]));if(deleted.length)localStorage.removeItem('olab-paper-deleted-v1');renderJournal();
-  $('journal-storage-status').textContent='Database sync complete • '+refreshed.trades.length+' saved server-side • Existing records preserved. Automatic sync enabled for new entries and updates.';
+  const performance=await api('/api/performance');
+  const localRows=journalRead();
+  const localClosed=localRows.filter(t=>Number.isFinite(t.exit)).length;
+  const match=performance.tracked===localRows.length&&performance.closed===localClosed;
+  $('journal-storage-status').textContent='Database sync complete • '+performance.tracked+' saved server-side • '+performance.closed+' closed • '+performance.open+' open • '+(match?'Dashboard counts verified against PostgreSQL.':'Browser and database counts differ; review pending local changes.')+' Automatic sync enabled.';
  }catch(e){$('journal-storage-status').textContent='Sync failed: '+e.message+' • Your local journal remains intact.'}
  finally{button.disabled=false}
 };
