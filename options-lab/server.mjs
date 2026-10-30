@@ -75,8 +75,17 @@ if(req.method==='GET'&&['/','/index.html','/app.js'].includes(u.pathname)){res.w
 if(!access)return send(res,503,{error:'Access not configured'});
 if(req.headers['x-options-lab-key']!==access)return send(res,401,{error:'Unauthorized'});
 try{
+if(u.pathname==='/api/paper-journal'){
+ if(!journalReady)return send(res,503,{error:'Paper journal database not ready'});
+ if(req.method==='GET')return send(res,200,{trades:await listJournal(),durable:true});
+ if(req.method==='POST'){
+  let raw='';for await(const part of req){raw+=part;if(raw.length>2000000)return send(res,413,{error:'Journal batch too large'})}
+  const result=await mergeJournal(JSON.parse(raw).trades);
+  return send(res,200,{...result,durable:true});
+ }
+}
 if(req.method==='GET'&&u.pathname==='/api/monitor'){
- return send(res,200,{...scanState,storage:{paperJournal:'browser-only',durable:false},notice:'Intraday breakout and volume filters with two-scan confirmation. No live trade execution, guaranteed fills, persistent paper fills or closed-app push. Scan state resets when server restarts.'});
+ return send(res,200,{...scanState,storage:{paperJournal:journalReady?'postgres':'browser-only',durable:journalReady},notice:'Intraday breakout and volume filters with two-scan confirmation. No live trade execution, guaranteed fills, persistent paper fills or closed-app push. Scan state resets when server restarts.'});
 }
 if(req.method==='GET'&&u.pathname==='/api/scanner'){
  const active=await upstream('/most-active');
