@@ -1,7 +1,7 @@
 import {createServer} from 'node:http';
 import {readFile} from 'node:fs/promises';
 import {screenContract,scoreContract,scoreSetup} from './risk.mjs';
-import {initJournal,listJournal,mergeJournal} from './paper-journal.mjs';
+import {initJournal,listJournal,mergeJournal,deleteJournal} from './paper-journal.mjs';
 let journalReady=false;
 initJournal().then(ready=>{journalReady=ready;console.log('Paper journal database:',ready?'ready':'not configured')}).catch(error=>console.error('Paper journal initialization failed:',error.message));
 const base=process.env.MARKET_DESK_BACKEND_URL||'https://market-desk-paper-scanner.onrender.com';
@@ -81,6 +81,10 @@ try{
 if(u.pathname==='/api/paper-journal'){
  if(!journalReady)return send(res,503,{error:'Paper journal database not ready'});
  if(req.method==='GET')return send(res,200,{trades:await listJournal(),durable:true});
+ if(req.method==='DELETE'){
+  let raw='';for await(const part of req){raw+=part;if(raw.length>200000)return send(res,413,{error:'Request too large'})}
+  return send(res,200,await deleteJournal(JSON.parse(raw).ids));
+ }
  if(req.method==='POST'){
   let raw='';for await(const part of req){raw+=part;if(raw.length>2000000)return send(res,413,{error:'Journal batch too large'})}
   const result=await mergeJournal(JSON.parse(raw).trades);
