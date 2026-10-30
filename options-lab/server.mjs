@@ -1,6 +1,9 @@
 import {createServer} from 'node:http';
 import {readFile} from 'node:fs/promises';
 import {screenContract,scoreContract,scoreSetup} from './risk.mjs';
+import {initJournal,listJournal,mergeJournal} from './paper-journal.mjs';
+let journalReady=false;
+initJournal().then(ready=>{journalReady=ready;console.log('Paper journal database:',ready?'ready':'not configured')}).catch(error=>console.error('Paper journal initialization failed:',error.message));
 const base=process.env.MARKET_DESK_BACKEND_URL||'https://market-desk-paper-scanner.onrender.com';
 const secret=process.env.SCANNER_SHARED_SECRET;
 const access=process.env.OPTIONS_LAB_ACCESS_KEY;
