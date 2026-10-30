@@ -33,3 +33,11 @@ export async function mergeJournal(trades){
   return {inserted,submitted:rows.length};
  }catch(e){await client.query('ROLLBACK');throw e}finally{client.release()}
 }
+
+export async function deleteJournal(ids){
+ if(!pool)throw Error('Journal database not configured');
+ if(!Array.isArray(ids)||ids.length>1000||!ids.every(id=>typeof id==='string'&&id.length>0&&id.length<=160))throw Error('Invalid deletion request');
+ if(!ids.length)return {deleted:0};
+ const result=await pool.query('DELETE FROM paper_trades WHERE trade_id = ANY($1::text[])',[ids]);
+ return {deleted:result.rowCount};
+}
