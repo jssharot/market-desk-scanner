@@ -212,6 +212,8 @@ async function refreshMonitor(){
  try{
   const state=await api('/api/monitor');
   $('monitor-status').textContent=(state.lastRun?'Last scan '+quoteDate(state.lastRun):'Waiting for first market-hours scan')+' • '+(state.candidates||[]).length+' watch-only candidates'+(state.running?' • scanning…':'')+(state.lastError?' • '+state.lastError:'');
+  const recent=state.history||[];const latest=recent[0];const counts=latest?.tiers||{};
+  const metric=$('monitor-metrics');if(metric)metric.textContent=latest?'Latest scan: '+latest.candidates+' candidates • '+(latest.confirmed||0)+' two-scan confirmed • '+['High Conviction','Actionable','Watchlist','Developing'].map(t=>t+': '+(counts[t]||0)).join(' · ')+' • '+recent.length+' scans in current server session':'No completed scan metrics yet';
   const events=state.alerts||[];
   if(monitorInitialized&&'Notification' in window&&Notification.permission==='granted'&&localStorage.getItem(notifyPreferenceKey)==='true'){
    for(const c of events){
