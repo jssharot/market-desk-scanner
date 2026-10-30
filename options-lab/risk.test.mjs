@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {screenContract,rankContracts} from './risk.mjs';
+import {screenContract,rankContracts,scoreContract} from './risk.mjs';
 const now=Date.parse('2026-10-29T15:00:00Z');
 const valid={symbol:'MSFT261030C00450000',expiry:'2026-10-30',bid:3.9,ask:4,bidSize:5,askSize:8,quoteTime:'2026-10-29T14:59:50Z'};
 test('qualifies liquid fresh short-term contract',()=>assert.equal(screenContract(valid,{now}).eligible,true));
@@ -25,4 +25,23 @@ test('uses New York trading date near UTC midnight',()=>{
 });
 test('rejects malformed expiration dates',()=>{
   assert.ok(screenContract({...valid,expiry:'not-a-date'},{now}).reasons.includes('expiration'));
+});
+
+test('scores eligible contracts with transparent factors and tiers',()=>{
+ const result=scoreContract({...valid,strike:450},{underlyingPrice:451,now});
+ assert.equal(result.eligible,true);
+ assert.ok(result.score>=0&&result.score<=100);
+ assert.equal(result.factors.length,5);
+ assert.ok(['High Conviction','Actionable','Watchlist','Rejected'].includes(result.tier));
+});
+test('rejects invalid contracts rather than assigning actionable scores',()=>{
+ const result=scoreContract({...valid,ask:12},{underlyingPrice:450,now});
+ assert.equal(result.eligible,false);
+ assert.equal(result.score,0);
+ assert.equal(result.tier,'Rejected');
+});
+test('rewards tighter spreads and stronger quote depth',()=>{
+ const strong=scoreContract({...valid,bid:3.98,bidSize:16,askSize:16,strike:450},{underlyingPrice:450,now});
+ const weak=scoreContract({...valid,bid:3.75,bidSize:1,askSize:1,strike:450},{underlyingPrice:450,now});
+ assert.ok(strong.score>weak.score);
 });
