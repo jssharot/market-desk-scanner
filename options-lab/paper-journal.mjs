@@ -4,6 +4,7 @@ const pool=process.env.DATABASE_URL?new Pool({connectionString:process.env.DATAB
 export const journalConfigured=()=>!!pool;
 export async function initJournal(){
  if(!pool)return false;
+ await pool.query(`CREATE TABLE IF NOT EXISTS scanner_diagnostics (id bigserial PRIMARY KEY, checked_at timestamptz NOT NULL DEFAULT now(), payload jsonb NOT NULL)`);
  await pool.query(`CREATE TABLE IF NOT EXISTS paper_trades (trade_id text PRIMARY KEY, payload jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now())`);
  return true;
 }
@@ -48,4 +49,15 @@ export async function closePaperTrade(id,exit,reason,quoteTime){
  const closedAt=new Date().toISOString();
  const result=await pool.query(`UPDATE paper_trades SET payload=jsonb_set(payload,'{exit}',to_jsonb($2::numeric),true) || jsonb_build_object('closedAt',$3::text,'exitReason',$4::text,'exitQuoteTime',$5::text,'exitAssumption','Bid quote, hypothetical; no execution verified'),updated_at=now() WHERE trade_id=$1 AND NOT (payload ? 'exit') RETURNING trade_id`,[id,exit,closedAt,reason,quoteTime]);
  return result.rowCount>0;
+}
+
+export async function saveScannerDiagnostic(payload){
+ if(!pool) return;
+ await pool.query('INSERT INTO scanner_diagnostics(payload) VALUES ($1::jsonb)',[JSON.stringify(payload)]);
+ await pool.query('DELETE FROM scanner_diagnostics WHERE id IN (SELECT id FROM scanner_diagnostics ORDER BY id DESC OFFSET 500)');
+}
+export async function listScannerDiagnostics(){
+ if(!pool)return [];
+ const r=await pool.query('SELECT payload FROM scanner_diagnostics ORDER BY id DESC LIMIT 100');
+ return r.rows.map(x=>x.payload);
 }
