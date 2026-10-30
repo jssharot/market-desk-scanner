@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {screenContract,rankContracts,scoreContract} from './risk.mjs';
+import {screenContract,rankContracts,scoreContract,scoreSetup} from './risk.mjs';
 const now=Date.parse('2026-10-29T15:00:00Z');
 const valid={symbol:'MSFT261030C00450000',expiry:'2026-10-30',bid:3.9,ask:4,bidSize:5,askSize:8,quoteTime:'2026-10-29T14:59:50Z'};
 test('qualifies liquid fresh short-term contract',()=>assert.equal(screenContract(valid,{now}).eligible,true));
@@ -44,4 +44,19 @@ test('rewards tighter spreads and stronger quote depth',()=>{
  const strong=scoreContract({...valid,bid:3.98,bidSize:16,askSize:16,strike:450},{underlyingPrice:450,now});
  const weak=scoreContract({...valid,bid:3.75,bidSize:1,askSize:1,strike:450},{underlyingPrice:450,now});
  assert.ok(strong.score>weak.score);
+});
+
+test('momentum-only setups never claim high conviction',()=>{
+ const s=scoreSetup({quoteScore:100,changePercent:9});
+ assert.equal(s.confirmation,'momentum-only');
+ assert.ok(s.score<80);
+});
+test('higher momentum increases setup ranking without inventing volume',()=>{
+ const a=scoreSetup({quoteScore:70,changePercent:0.5});
+ const b=scoreSetup({quoteScore:70,changePercent:3});
+ assert.ok(b.score>a.score);
+ assert.equal(b.factors.find(x=>x.name==='Relative bar volume').points,0);
+});
+test('invalid quotes are rejected by setup ranking',()=>{
+ assert.equal(scoreSetup({quoteScore:0,changePercent:8}).tier,'Rejected');
 });
