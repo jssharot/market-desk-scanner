@@ -28,3 +28,27 @@ export function rankContracts(contracts,opts={}) {
   return contracts.map(c=>screenContract(c,opts)).filter(c=>c.eligible)
     .sort((a,b)=>a.spreadPct-b.spreadPct||a.premiumDollars-b.premiumDollars);
 }
+
+export function scoreContract(contract,{underlyingPrice=null,now=Date.now(),rules=SHORT_TERM_RULES}={}) {
+  const screen=screenContract(contract,{now,rules});
+  if(!screen.eligible)return {...screen,score:0,tier:'Rejected',factors:[]};
+  const clamp=(n,min,max)=>Math.max(min,Math.min(max,n));
+  const spreadScore=30*(1-clamp(screen.spreadPct/rules.maxSpreadPct,0,1));
+  const depth=Math.min(contract.bidSize,contract.askSize);
+  const depthScore=20*clamp(Math.log2(depth+1)/Math.log2(17),0,1);
+  const age=now-Date.parse(contract.quoteTime);
+  const freshnessScore=15*(1-clamp(Math.max(0,age)/(rules.maxQuoteAgeSeconds*1000),0,1));
+  const distance=Number.isFinite(underlyingPrice)&&underlyingPrice>0&&Number.isFinite(contract.strike)
+    ?Math.abs(contract.strike-underlyingPrice)/underlyingPrice:null;
+  const strikeScore=distance===null?10:20*(1-clamp(distance/0.1,0,1));
+  const budgetScore=15*(1-clamp(screen.premiumDollars/rules.maxPremiumDollars,0,1));
+  const score=Math.round(spreadScore+depthScore+freshnessScore+strikeScore+budgetScore);
+  const tier=score>=80?'High Conviction':score>=65?'Actionable':score>=45?'Watchlist':'Rejected';
+  return {...screen,score,tier,factors:[
+    {name:'Spread',points:Math.round(spreadScore)},
+    {name:'Quote depth',points:Math.round(depthScore)},
+    {name:'Quote freshness',points:Math.round(freshnessScore)},
+    {name:'Strike proximity',points:Math.round(strikeScore)},
+    {name:'Premium headroom',points:Math.round(budgetScore)}
+  ],scoreNotice:'Liquidity and price-quality research score, not a directional signal or probability of profit.'};
+}
