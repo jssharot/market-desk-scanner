@@ -77,3 +77,28 @@ export async function paperQuoteCoverage(){
  const r=await pool.query('SELECT trade_id, count(*)::int AS samples, min(quote_time) AS first_quote, max(quote_time) AS last_quote FROM paper_quote_samples GROUP BY trade_id ORDER BY max(quote_time) DESC LIMIT 1000');
  return r.rows.map(x=>({tradeId:x.trade_id,samples:x.samples,firstQuote:x.first_quote,lastQuote:x.last_quote}));
 }
+
+export async function paperQuoteQuality(){
+ if(!pool)throw Error('Journal database not configured');
+ const r=await pool.query(`WITH ordered AS (
+ SELECT trade_id,quote_time,bid,ask,bid_size,
+ EXTRACT(EPOCH FROM (quote_time-lag(quote_time) OVER(PARTITION BY trade_id ORDER BY quote_time))) AS gap_seconds
+ FROM paper_quote_samples
+ ), aggregates AS (
+ SELECT trade_id,count(*)::int AS samples,min(quote_time) AS first_quote,max(quote_time) AS last_quote,
+ count(*) FILTER (WHERE gap_seconds>90)::int AS gaps_over_90s,
+ coalesce(max(gap_seconds),0)::float AS max_gap_seconds,
+ count(*) FILTER (WHERE ask IS NOT NULL AND ask<bid)::int AS crossed_quotes,
+ count(*) FILTER (WHERE ask IS NOT NULL AND ask>0 AND (ask-bid)/ask>0.15)::int AS wide_spread_quotes
+ FROM ordered GROUP BY trade_id
+ ) SELECT * FROM aggregates ORDER BY last_quote DESC LIMIT 1000`);
+ return r.rows.map(x=>({tradeId:x.trade_id,samples:x.samples,firstQuote:x.first_quote,lastQuote:x.last_quote,gapsOver90s:x.gaps_over_90s,maxGapSeconds:x.max_gap_seconds,crossedQuotes:x.crossed_quotes,wideSpreadQuotes:x.wide_spread_quotes}));
+}
+export async function replayObservedQuotes(limit=100){
+ if(!pool)throw Error('Journal database not configured');
+ const result=await pool.query(`SELECT t.trade_id,t.payload,q.quote_time,q.bid FROM paper_trades t JOIN paper_quote_samples q ON q.trade_id=t.trade_id WHERE t.payload ? 'exit' ORDER BY t.created_at DESC,q.quote_time ASC LIMIT 10000`);
+ const groups=new Map();
+ for(const row of result.rows){if(!groups.has(row.trade_id)){if(groups.size>=limit)continue;groups.set(row.trade_id,{trade:row.payload,quotes:[]})}groups.get(row.trade_id).quotes.push({time:row.quote_time,bid:Number(row.bid)})}
+ const rules=[{name:'Current -30% / +50%',stop:-30,target:50},{name:'Alternative -20% / +40%',stop:-20,target:40},{name:'Alternative -25% / +60%',stop:-25,target:60}];
+ return {source:'observed_bid_snapshots',continuous:false,notice:'Observed threshold touches only. No inference between snapshots; outcomes are not complete counterfactual returns.',rules:rules.map(rule=>({name:rule.name,stop:rule.stop,target:rule.target,observedTouches:[...groups.values()].reduce((acc,{trade,quotes})=>{if(!Number.isFinite(trade.entry)||trade.entry<=0||quotes.length<2)return acc;const hit=quotes.find(q=>q.bid<=trade.entry*(1+rule.stop/100)||q.bid>=trade.entry*(1+rule.target/100));if(hit){acc.push({tradeId:trade.id,observedAt:hit.time,observedBid:hit.bid,trigger:hit.bid<=trade.entry*(1+rule.stop/100)?'stop':'target',snapshots:quotes.length})}return acc},[])})),tradesWithSamples:groups.size};
+}
