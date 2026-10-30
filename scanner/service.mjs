@@ -115,6 +115,20 @@ const server=createServer(async(req,res)=>{if(req.method==='GET'&&new URL(req.ur
  }catch{send(400,{error:'Invalid request'})}});
 server.listen(Number(env.PORT||10000),'0.0.0.0',()=>console.log('Paper scanner service listening'));
 let marketBusy=false;const marketTick=async()=>{if(marketBusy||stopped)return;marketBusy=true;try{await market.background()}finally{marketBusy=false}};const marketTimer=setInterval(marketTick,15000);marketTick();
+// Keep the separate Options Lab free instance responsive from this already-paid service.
+// Health-only request: no access key, journal data, or trading actions involved.
+let optionsLabHeartbeatBusy=false;
+async function optionsLabHeartbeat(){
+ if(optionsLabHeartbeatBusy||stopped)return;
+ optionsLabHeartbeatBusy=true;
+ try{
+  const response=await fetch('https://options-lab-beta.onrender.com/health',{signal:AbortSignal.timeout(20000),headers:{'user-agent':'MarketDesk-OptionsLab-Heartbeat/1.0'}});
+  if(!response.ok)console.warn('Options Lab health returned',response.status);
+ }catch(error){console.warn('Options Lab heartbeat failed:',error.message)}
+ finally{optionsLabHeartbeatBusy=false}
+}
+const optionsLabHeartbeatTimer=setInterval(optionsLabHeartbeat,120000);
+optionsLabHeartbeat();
 const timer=setInterval(tick,RULES.pollSeconds*1000);tick();
-async function shutdown(){stopped=true;clearInterval(timer);clearInterval(marketTimer);server.close();while(inFlight||marketBusy)await new Promise(r=>setTimeout(r,100));await save();process.exit(0)}
+async function shutdown(){stopped=true;clearInterval(timer);clearInterval(marketTimer);clearInterval(optionsLabHeartbeatTimer);server.close();while(inFlight||marketBusy)await new Promise(r=>setTimeout(r,100));await save();process.exit(0)}
 process.on('SIGTERM',shutdown);process.on('SIGINT',shutdown);
