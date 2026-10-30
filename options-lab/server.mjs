@@ -1,7 +1,7 @@
 import {createServer} from 'node:http';
 import {readFile} from 'node:fs/promises';
 import {screenContract,scoreContract,scoreSetup} from './risk.mjs';
-import {initJournal,listJournal,mergeJournal,deleteJournal} from './paper-journal.mjs';
+import {initJournal,listJournal,mergeJournal,deleteJournal,closePaperTrade} from './paper-journal.mjs';
 let journalReady=false;
 initJournal().then(ready=>{journalReady=ready;console.log('Paper journal database:',ready?'ready':'not configured')}).catch(error=>console.error('Paper journal initialization failed:',error.message));
 const base=process.env.MARKET_DESK_BACKEND_URL||'https://market-desk-paper-scanner.onrender.com';
@@ -72,6 +72,39 @@ async function backgroundScan(){
  finally{scanState.running=false}
 }
 const scanIfMarketHours=async()=>{const t=easternNow();if(!['Mon','Tue','Wed','Thu','Fri'].includes(t.weekday)||t.minutes<570||t.minutes>=960)return;try{const state=await upstream('/state');if(state.session?.isOpen===false||state.session?.marketOpen===false)return}catch{return}void backgroundScan()};setInterval(scanIfMarketHours,300000).unref();scanIfMarketHours();
+let paperExitBusy=false;
+const paperExitStatus={lastCheck:null,lastError:null,checked:0,closed:0};
+async function monitorPaperExits(){
+ if(paperExitBusy||!journalReady)return;
+ const t=easternNow();
+ if(!['Mon','Tue','Wed','Thu','Fri'].includes(t.weekday)||t.minutes<570||t.minutes>=960)return;
+ paperExitBusy=true;
+ try{
+  const state=await upstream('/state');
+  if(state.session?.isOpen===false||state.session?.marketOpen===false)return;
+  const trades=(await listJournal()).filter(x=>x.auto===true&&!Number.isFinite(x.exit)).slice(0,20);
+  let checked=0,closed=0;
+  for(const trade of trades){
+   try{
+    const q=new URL('/chain',base);
+    for(const [k,v] of Object.entries({symbol:trade.symbol,expiry:trade.expiry,side:trade.side}))q.searchParams.set(k,v);
+    const chain=await upstream(q.pathname+q.search);
+    const contract=(chain.contracts||[]).find(c=>Math.abs(Number(c.strike)-Number(trade.strike))<0.001);
+    if(!contract||!Number.isFinite(contract.bid)||contract.bid<0||!Number.isFinite(contract.bidSize)||contract.bidSize<1)continue;
+    const age=Date.now()-Date.parse(contract.quoteTime);
+    if(!Number.isFinite(age)||age< -5000||age>30000)continue;
+    const pct=(contract.bid/trade.entry-1)*100;
+    const reason=pct<=-30?'Paper stop (-30%)':pct>=50?'Paper target (+50%)':null;
+    checked++;
+    if(reason&&await closePaperTrade(trade.id,contract.bid,reason,contract.quoteTime))closed++;
+   }catch{}
+  }
+  Object.assign(paperExitStatus,{lastCheck:new Date().toISOString(),lastError:null,checked,closed:paperExitStatus.closed+closed});
+ }catch(e){paperExitStatus.lastError=e.message}
+ finally{paperExitBusy=false}
+}
+setInterval(()=>{void monitorPaperExits()},60000).unref();
+setTimeout(()=>{void monitorPaperExits()},5000);
 createServer(async(req,res)=>{const u=new URL(req.url,'http://localhost');
 if(u.pathname==='/health')return send(res,200,{ok:true,configured:!!secret&&!!access});
 if(req.method==='GET'&&['/','/index.html','/app.js'].includes(u.pathname)){res.writeHead(200,{'content-type':u.pathname==='/app.js'?'text/javascript':'text/html','cache-control':'no-store'});return res.end(await readFile(new URL(u.pathname==='/app.js'?'./app.js':'./index.html',import.meta.url)))}
@@ -92,7 +125,7 @@ if(u.pathname==='/api/paper-journal'){
  }
 }
 if(req.method==='GET'&&u.pathname==='/api/monitor'){
- return send(res,200,{...scanState,storage:{paperJournal:journalReady?'postgres':'browser-only',durable:journalReady},notice:'Intraday breakout and volume filters with two-scan confirmation. No live trade execution, guaranteed fills, persistent paper fills or closed-app push. Scan state resets when server restarts.'});
+ return send(res,200,{...scanState,paperExits:paperExitStatus,storage:{paperJournal:journalReady?'postgres':'browser-only',durable:journalReady},notice:'Intraday breakout and volume filters with two-scan confirmation. No live trade execution, guaranteed fills, persistent paper fills or closed-app push. Scan state resets when server restarts.'});
 }
 if(req.method==='GET'&&u.pathname==='/api/scanner'){
  const active=await upstream('/most-active');
