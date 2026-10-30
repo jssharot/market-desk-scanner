@@ -228,6 +228,14 @@ updateNotifyButton();
 async function refreshMonitor(){
  try{
   const state=await api('/api/monitor');
+  try{
+   const risk=await api('/api/risk');
+   const parent=$('monitor-status').parentNode;
+   let info=parent.querySelector('.paper-risk-status');
+   if(!info){info=document.createElement('p');info.className='muted paper-risk-status';parent.append(info)}
+   info.textContent='Paper risk • '+risk.open+'/'+risk.limits.maxOpenPositions+' open • Daily realized P/L '+money(risk.realizedPnl)+' / -'+money(risk.limits.maxDailyRealizedLoss)+' limit • Consecutive losses '+risk.lossStreak+'/'+risk.limits.lossStreakCooldown+(risk.blocked.length?' • New simulated entries paused: '+risk.blocked.join(', '):' • Entries permitted subject to signal rules');
+  }catch{}
+
   $('monitor-status').textContent=(state.lastRun?'Last scan '+quoteDate(state.lastRun):'Waiting for first market-hours scan')+' • '+(state.candidates||[]).length+' watch-only candidates'+(state.running?' • scanning…':'')+(state.lastError?' • '+state.lastError:'');
   const recent=state.history||[];const latest=recent[0];const counts=latest?.tiers||{};
   const metric=$('monitor-metrics');if(metric)metric.textContent=latest?'Latest scan: '+latest.candidates+' candidates • '+(latest.confirmed||0)+' two-scan confirmed • '+['High Conviction','Actionable','Watchlist','Developing'].map(t=>t+': '+(counts[t]||0)).join(' · ')+' • '+recent.length+' scans in current server session':'No completed scan metrics yet';
