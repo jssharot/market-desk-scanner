@@ -52,3 +52,24 @@ export function scoreContract(contract,{underlyingPrice=null,now=Date.now(),rule
     {name:'Premium headroom',points:Math.round(budgetScore)}
   ],scoreNotice:'Liquidity and price-quality research score, not a directional signal or probability of profit.'};
 }
+
+export function scoreSetup({quoteScore,changePercent,volumeRatio=null,breakoutConfirmed=false}={}) {
+  if(!Number.isFinite(quoteScore)||quoteScore<=0)return {score:0,tier:'Rejected',direction:null,confirmation:'unavailable'};
+  const clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
+  const move=Number.isFinite(changePercent)?Math.abs(changePercent):0;
+  const momentum=30*clamp(move/4,0,1);
+  const volume=Number.isFinite(volumeRatio)&&volumeRatio>=0?20*clamp(volumeRatio/1.5,0,1):0;
+  const breakout=breakoutConfirmed?15:0;
+  const quality=35*clamp(quoteScore/100,0,1);
+  const raw=Math.round(momentum+volume+breakout+quality);
+  // Without independently confirmed intraday volume and breakout, never label a trade high conviction.
+  const score=breakoutConfirmed&&Number.isFinite(volumeRatio)?raw:Math.min(raw,79);
+  const tier=score>=80?'High Conviction':score>=65?'Actionable':score>=45?'Watchlist':'Developing';
+  return {score,tier,direction:changePercent>0?'call':changePercent<0?'put':null,
+    confirmation:breakoutConfirmed&&Number.isFinite(volumeRatio)?'technical-confirmed':'momentum-only',
+    factors:[{name:'Option quote quality',points:Math.round(quality)},
+      {name:'Stock momentum',points:Math.round(momentum)},
+      {name:'Relative bar volume',points:Math.round(volume)},
+      {name:'Breakout confirmation',points:breakout}],
+    note:'Research ranking only; not a probability of profit or verified entry.'};
+}
