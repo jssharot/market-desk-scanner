@@ -139,7 +139,7 @@ async function monitorPaperExits(){
     const reason=paperExitDecision(trade,contract);
     checked++;
     if(reason&&await closePaperTrade(trade.id,contract.bid,reason,contract.quoteTime))closed++;
-   }catch{}
+   }catch(error){console.error('Paper exit monitoring failed for '+trade.id+': '+error.message)}
   }
   Object.assign(paperExitStatus,{lastCheck:new Date().toISOString(),lastError:null,checked,closed:paperExitStatus.closed+closed});
  }catch(e){paperExitStatus.lastError=e.message}
