@@ -26,6 +26,7 @@ function paperRiskStatus(trades,now=new Date()){
  const blocked=[];if(open>=riskLimits.maxOpenPositions)blocked.push('Maximum open positions');if(realizedPnl<=-riskLimits.maxDailyRealizedLoss)blocked.push('Daily realized loss limit');if(lossStreak>=riskLimits.lossStreakCooldown)blocked.push('Consecutive loss cooldown');
  return {limits:riskLimits,open,realizedPnl,lossStreak,blocked,dayET:today,hypothetical:true};
 }
+let discoveryWindow=0;
 const scanState={lastRun:null,lastError:null,lastAttempt:null,lastOutcome:'waiting',successfulScans:0,failedScans:0,candidates:[],running:false,history:[],confirmed:[],priorCandidates:[],alerts:[],rejections:{},tickerDiagnostics:[],shadowCoverage:[]};
 function easternNow(){const parts=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',weekday:'short',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date());const x=Object.fromEntries(parts.map(p=>[p.type,p.value]));return {weekday:x.weekday,minutes:Number(x.hour)*60+Number(x.minute)}}
 async function backgroundScan(){
@@ -38,22 +39,28 @@ async function backgroundScan(){
   const discovery=[...new Set((active.stocks||[]).filter(x=>x.optionsEligible===true).map(x=>x.symbol))];
   // Benchmark known liquid large-cap names alongside most-active discovery; no new automatic entries.
   const benchmarkSymbols=['MSFT','AAPL','NVDA','AMZN','META','GOOGL','TSLA','AMD','SPY','QQQ'];
-  const symbols=[...new Set([...discovery.slice(0,30),...benchmarkSymbols])];
+  const symbols=[...new Set([...discovery,...benchmarkSymbols])];
   if(!symbols.length)throw Error('No optionable candidates');
   const qs=new URL('/quotes',base);qs.searchParams.set('symbols',symbols.join(','));
   const snapshots=await upstream(qs.pathname+qs.search);
   const rankedStocks=(snapshots.quotes||[]).filter(x=>!x.unavailable&&Number.isFinite(x.price)&&Number.isFinite(x.changePercent)&&Math.abs(x.changePercent)>=0.75).sort((a,b)=>Math.abs(b.changePercent)-Math.abs(a.changePercent));
-  const stocks=rankedStocks.slice(0,10);
+  // Evaluate rotating batches in pairs of scans so two-scan confirmation remains possible.
+  const batchSize=10;
+  const windowCount=Math.max(1,Math.ceil(rankedStocks.length/batchSize));
+  const windowIndex=Math.floor(discoveryWindow/2)%windowCount;
+  const stocks=rankedStocks.slice(windowIndex*batchSize,(windowIndex+1)*batchSize);
+  discoveryWindow++;
   const tickerReasons=new Map();
   for(const item of (active.stocks||[]))if(item.symbol&&item.optionsEligible!==true)tickerReasons.set(item.symbol,'Not optionable or outside first 30');
   for(const sym of symbols)if(!tickerReasons.has(sym))tickerReasons.set(sym,'Missing quote or below 0.75% daily move');
-  for(const item of rankedStocks.slice(10))tickerReasons.set(item.symbol,'Outside top 10 movers');
+  for(const item of rankedStocks.filter(x=>!stocks.some(y=>y.symbol===x.symbol)))tickerReasons.set(item.symbol,'Queued for rotating evaluation');
   for(const item of stocks)tickerReasons.set(item.symbol,'Evaluation started');
   const checkedAt=new Date().toISOString();
   const rejections={};
   const reject=(reason,sym)=>{rejections[reason]=(rejections[reason]||0)+1;if(sym)tickerReasons.set(sym,reason);return null};
   rejections['Not optionable']=Math.max(0,(active.stocks||[]).length-symbols.length);
-  rejections['Quote or momentum filter']=Math.max(0,symbols.length-stocks.length);
+  rejections['Quote or momentum filter']=Math.max(0,symbols.length-rankedStocks.length);
+  rejections['Queued for rotating evaluation']=Math.max(0,rankedStocks.length-stocks.length);
   const results=await Promise.all(stocks.map(async stock=>{
    try{
     const e=new URL('/expirations',base);e.searchParams.set('symbol',stock.symbol);
@@ -113,7 +120,7 @@ async function backgroundScan(){
   }
   scanState.candidates=current.sort((a,b)=>b.setup.score-a.setup.score);scanState.priorCandidates=current;
   scanState.tickerDiagnostics=[...tickerReasons].map(([symbol,reason])=>({symbol,reason})).sort((a,b)=>a.symbol.localeCompare(b.symbol));
-  scanState.shadowCoverage=[...rankedStocks.slice(10,30)].map(q=>({symbol:q.symbol,changePercent:q.changePercent,reason:'Beyond current top-10 evaluation cap; observation only'}));
+  scanState.shadowCoverage=rankedStocks.filter(q=>!stocks.some(x=>x.symbol===q.symbol)).map(q=>({symbol:q.symbol,changePercent:q.changePercent,reason:'Queued for rotating evaluation'}));
   for(const sym of benchmarkSymbols){if(!scanState.tickerDiagnostics.some(x=>x.symbol===sym))scanState.tickerDiagnostics.push({symbol:sym,reason:'Benchmark quote unavailable'});}
   scanState.tickerDiagnostics.sort((a,b)=>a.symbol.localeCompare(b.symbol));
   for(const c of scanState.confirmed){
@@ -123,7 +130,7 @@ async function backgroundScan(){
   scanState.alerts=scanState.alerts.slice(0,40);
   scanState.lastRun=checkedAt;scanState.lastError=null;scanState.lastOutcome='completed';scanState.successfulScans++;
   const tiers=Object.fromEntries(['High Conviction','Actionable','Watchlist','Developing'].map(t=>[t,scanState.candidates.filter(c=>c.setup?.tier===t).length]));
-  const diagnostic={checkedAt,candidates:scanState.candidates.length,confirmed:scanState.confirmed.length,tiers,rejections,tickerDiagnostics:scanState.tickerDiagnostics,shadowCoverage:scanState.shadowCoverage};
+  const diagnostic={checkedAt,candidates:scanState.candidates.length,confirmed:scanState.confirmed.length,tiers,rejections,tickerDiagnostics:scanState.tickerDiagnostics,shadowCoverage:scanState.shadowCoverage,discovery:{symbolsRequested:symbols.length,qualified:rankedStocks.length,evaluated:stocks.length,queued:Math.max(0,rankedStocks.length-stocks.length),windowIndex,windowCount}};
   scanState.history.unshift(diagnostic);scanState.history=scanState.history.slice(0,100);
   if(journalReady)try{await saveScannerDiagnostic(diagnostic)}catch(e){console.error('Scanner history persistence failed:',e.message)}
  }catch(e){scanState.lastError=e.message;scanState.lastOutcome='failed';scanState.failedScans++;console.error('Options Lab background scan failed:',e.message)}
