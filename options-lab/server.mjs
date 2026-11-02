@@ -35,7 +35,10 @@ async function backgroundScan(){
  scanState.lastOutcome='running';
  try{
   const active=await upstream('/most-active');
-  const symbols=[...new Set((active.stocks||[]).filter(x=>x.optionsEligible===true).map(x=>x.symbol))].slice(0,30);
+  const discovery=[...new Set((active.stocks||[]).filter(x=>x.optionsEligible===true).map(x=>x.symbol))];
+  // Benchmark known liquid large-cap names alongside most-active discovery; no new automatic entries.
+  const benchmarkSymbols=['MSFT','AAPL','NVDA','AMZN','META','GOOGL','TSLA','AMD','SPY','QQQ'];
+  const symbols=[...new Set([...discovery.slice(0,30),...benchmarkSymbols])];
   if(!symbols.length)throw Error('No optionable candidates');
   const qs=new URL('/quotes',base);qs.searchParams.set('symbols',symbols.join(','));
   const snapshots=await upstream(qs.pathname+qs.search);
@@ -111,6 +114,8 @@ async function backgroundScan(){
   scanState.candidates=current.sort((a,b)=>b.setup.score-a.setup.score);scanState.priorCandidates=current;
   scanState.tickerDiagnostics=[...tickerReasons].map(([symbol,reason])=>({symbol,reason})).sort((a,b)=>a.symbol.localeCompare(b.symbol));
   scanState.shadowCoverage=[...rankedStocks.slice(10,30)].map(q=>({symbol:q.symbol,changePercent:q.changePercent,reason:'Beyond current top-10 evaluation cap; observation only'}));
+  for(const sym of benchmarkSymbols){if(!scanState.tickerDiagnostics.some(x=>x.symbol===sym))scanState.tickerDiagnostics.push({symbol:sym,reason:'Benchmark quote unavailable'});}
+  scanState.tickerDiagnostics.sort((a,b)=>a.symbol.localeCompare(b.symbol));
   for(const c of scanState.confirmed){
    const last=scanState.alerts.find(a=>a.id===c.id&&Date.now()-Date.parse(a.checkedAt)<3600000);
    if(!last)scanState.alerts.unshift(c);
