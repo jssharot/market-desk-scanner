@@ -26,7 +26,7 @@ function paperRiskStatus(trades,now=new Date()){
  const blocked=[];if(open>=riskLimits.maxOpenPositions)blocked.push('Maximum open positions');if(realizedPnl<=-riskLimits.maxDailyRealizedLoss)blocked.push('Daily realized loss limit');if(lossStreak>=riskLimits.lossStreakCooldown)blocked.push('Consecutive loss cooldown');
  return {limits:riskLimits,open,realizedPnl,lossStreak,blocked,dayET:today,hypothetical:true};
 }
-const scanState={lastRun:null,lastError:null,lastAttempt:null,lastOutcome:'waiting',successfulScans:0,failedScans:0,candidates:[],running:false,history:[],confirmed:[],priorCandidates:[],alerts:[],rejections:{}};
+const scanState={lastRun:null,lastError:null,lastAttempt:null,lastOutcome:'waiting',successfulScans:0,failedScans:0,candidates:[],running:false,history:[],confirmed:[],priorCandidates:[],alerts:[],rejections:{},tickerDiagnostics:[],shadowCoverage:[]};
 function easternNow(){const parts=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',weekday:'short',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date());const x=Object.fromEntries(parts.map(p=>[p.type,p.value]));return {weekday:x.weekday,minutes:Number(x.hour)*60+Number(x.minute)}}
 async function backgroundScan(){
  if(scanState.running)return;
@@ -39,10 +39,16 @@ async function backgroundScan(){
   if(!symbols.length)throw Error('No optionable candidates');
   const qs=new URL('/quotes',base);qs.searchParams.set('symbols',symbols.join(','));
   const snapshots=await upstream(qs.pathname+qs.search);
-  const stocks=(snapshots.quotes||[]).filter(x=>!x.unavailable&&Number.isFinite(x.price)&&Number.isFinite(x.changePercent)&&Math.abs(x.changePercent)>=0.75).sort((a,b)=>Math.abs(b.changePercent)-Math.abs(a.changePercent)).slice(0,10);
+  const rankedStocks=(snapshots.quotes||[]).filter(x=>!x.unavailable&&Number.isFinite(x.price)&&Number.isFinite(x.changePercent)&&Math.abs(x.changePercent)>=0.75).sort((a,b)=>Math.abs(b.changePercent)-Math.abs(a.changePercent));
+  const stocks=rankedStocks.slice(0,10);
+  const tickerReasons=new Map();
+  for(const item of (active.stocks||[]))if(item.symbol&&item.optionsEligible!==true)tickerReasons.set(item.symbol,'Not optionable or outside first 30');
+  for(const sym of symbols)if(!tickerReasons.has(sym))tickerReasons.set(sym,'Missing quote or below 0.75% daily move');
+  for(const item of rankedStocks.slice(10))tickerReasons.set(item.symbol,'Outside top 10 movers');
+  for(const item of stocks)tickerReasons.set(item.symbol,'Evaluation started');
   const checkedAt=new Date().toISOString();
   const rejections={};
-  const reject=(reason)=>{rejections[reason]=(rejections[reason]||0)+1;return null};
+  const reject=(reason,sym)=>{rejections[reason]=(rejections[reason]||0)+1;if(sym)tickerReasons.set(sym,reason);return null};
   rejections['Not optionable']=Math.max(0,(active.stocks||[]).length-symbols.length);
   rejections['Quote or momentum filter']=Math.max(0,symbols.length-stocks.length);
   const results=await Promise.all(stocks.map(async stock=>{
@@ -51,19 +57,19 @@ async function backgroundScan(){
     const ex=await upstream(e.pathname+e.search);
     const dateParts=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date());const dateFields=Object.fromEntries(dateParts.map(p=>[p.type,p.value]));const today=dateFields.year+'-'+dateFields.month+'-'+dateFields.day;
     const dates=(ex.expirations||[]).filter(d=>{const diff=(Date.parse(d+'T12:00:00Z')-Date.parse(today+'T12:00:00Z'))/86400000;return diff>=0&&diff<=10});
-    if(!dates.length)return reject('No near-term expiry');
+    if(!dates.length)return reject('No near-term expiry',stock.symbol);
     const side=stock.changePercent>0?'call':'put';
     const target=new URL('/chain',base);Object.entries({symbol:stock.symbol,expiry:dates[0],side}).forEach(([k,v])=>target.searchParams.set(k,v));
     const chain=await upstream(target.pathname+target.search);
     const eligible=(chain.contracts||[]).map(c=>({...c,screen:scoreContract({...c,expiry:dates[0]},{underlyingPrice:stock.price})})).filter(c=>c.screen.eligible&&Number.isFinite(c.strike)&&Math.abs(c.strike-stock.price)/stock.price<=0.08).sort((a,b)=>b.screen.score-a.screen.score);
-    if(!eligible.length)return reject('No eligible liquid contract');
+    if(!eligible.length)return reject('No eligible liquid contract',stock.symbol);
     const c=eligible[0];
     const barsUrl=new URL('/bars',base);barsUrl.searchParams.set('symbol',stock.symbol);barsUrl.searchParams.set('range','1D');
     const intraday=await upstream(barsUrl.pathname+barsUrl.search);
     const bars=(intraday.bars||[]).filter(b=>Number.isFinite(b.h)&&Number.isFinite(b.l)&&Number.isFinite(b.c));
     const previous=bars.slice(-13,-1);
     const last=bars.at(-1);
-    if(previous.length<8||!last||!Number.isFinite(Date.parse(last.t))||Date.now()-Date.parse(last.t)>180000)return reject('Insufficient or stale intraday bars');
+    if(previous.length<8||!last||!Number.isFinite(Date.parse(last.t))||Date.now()-Date.parse(last.t)>180000)return reject('Insufficient or stale intraday bars',stock.symbol);
     const recentHigh=Math.max(...previous.map(b=>b.h)),recentLow=Math.min(...previous.map(b=>b.l));
     const isBreakout=side==='call'?last.c>recentHigh:last.c<recentLow;
     const volumeAverage=previous.reduce((n,b)=>n+(Number(b.v)||0),0)/previous.length;
@@ -73,8 +79,9 @@ async function backgroundScan(){
     const range=Math.max(0.01,recentHigh-recentLow);
     const stopLevel=side==='call'?Number((last.c-range*.5).toFixed(2)):Number((last.c+range*.5).toFixed(2));
     const targetLevel=side==='call'?Number((last.c+range).toFixed(2)):Number((last.c-range).toFixed(2));
+    tickerReasons.set(stock.symbol,isBreakout&&volumeConfirmed?'Breakout watch; awaiting second scan':'Breakout and volume not both confirmed');
     return {id:stock.symbol+'-'+dates[0]+'-'+side+'-'+c.strike,symbol:stock.symbol,side,expiry:dates[0],strike:c.strike,ask:c.ask,bid:c.bid,underlying:stock.price,changePercent:stock.changePercent,spreadPct:c.screen.spreadPct,premiumDollars:c.screen.premiumDollars,quoteTime:c.quoteTime,checkedAt,classification:isBreakout&&volumeConfirmed?'BREAKOUT_WATCH':'DEVELOPING_WATCH',setup,breakoutLevel:side==='call'?recentHigh:recentLow,stopLevel,targetLevel,volumeRatio:volumeRatio===null?null:Number(volumeRatio.toFixed(2)),barTime:last.t,reason:isBreakout&&volumeConfirmed?'Intraday breakout with 1.3x recent volume; research only.':'Developing setup; breakout and volume not both confirmed. Research only.'};
-   }catch{return reject('Upstream symbol data error')}
+   }catch{return reject('Upstream symbol data error',stock.symbol)}
   }));
   const current=results.filter(Boolean);
   rejections['Breakout not confirmed']=current.filter(c=>c.classification!=='BREAKOUT_WATCH').length;
@@ -102,6 +109,8 @@ async function backgroundScan(){
    }catch(e){console.error('Paper auto-entry failed:',e.message)}
   }
   scanState.candidates=current.sort((a,b)=>b.setup.score-a.setup.score);scanState.priorCandidates=current;
+  scanState.tickerDiagnostics=[...tickerReasons].map(([symbol,reason])=>({symbol,reason})).sort((a,b)=>a.symbol.localeCompare(b.symbol));
+  scanState.shadowCoverage=[...rankedStocks.slice(10,30)].map(q=>({symbol:q.symbol,changePercent:q.changePercent,reason:'Beyond current top-10 evaluation cap; observation only'}));
   for(const c of scanState.confirmed){
    const last=scanState.alerts.find(a=>a.id===c.id&&Date.now()-Date.parse(a.checkedAt)<3600000);
    if(!last)scanState.alerts.unshift(c);
@@ -109,7 +118,7 @@ async function backgroundScan(){
   scanState.alerts=scanState.alerts.slice(0,40);
   scanState.lastRun=checkedAt;scanState.lastError=null;scanState.lastOutcome='completed';scanState.successfulScans++;
   const tiers=Object.fromEntries(['High Conviction','Actionable','Watchlist','Developing'].map(t=>[t,scanState.candidates.filter(c=>c.setup?.tier===t).length]));
-  const diagnostic={checkedAt,candidates:scanState.candidates.length,confirmed:scanState.confirmed.length,tiers,rejections};
+  const diagnostic={checkedAt,candidates:scanState.candidates.length,confirmed:scanState.confirmed.length,tiers,rejections,tickerDiagnostics:scanState.tickerDiagnostics,shadowCoverage:scanState.shadowCoverage};
   scanState.history.unshift(diagnostic);scanState.history=scanState.history.slice(0,100);
   if(journalReady)try{await saveScannerDiagnostic(diagnostic)}catch(e){console.error('Scanner history persistence failed:',e.message)}
  }catch(e){scanState.lastError=e.message;scanState.lastOutcome='failed';scanState.failedScans++;console.error('Options Lab background scan failed:',e.message)}
