@@ -27,7 +27,7 @@ function paperRiskStatus(trades,now=new Date()){
  return {limits:riskLimits,open,realizedPnl,lossStreak,blocked,dayET:today,hypothetical:true};
 }
 let discoveryWindow=0;
-const scanState={lastRun:null,lastError:null,lastAttempt:null,lastOutcome:'waiting',successfulScans:0,failedScans:0,candidates:[],running:false,history:[],confirmed:[],priorCandidates:[],alerts:[],rejections:{},tickerDiagnostics:[],shadowCoverage:[],paperEntryMetrics:{lastCheck:null,confirmed:0,accepted:0,rejected:0,blocked:[],journalReady:false,reasons:{}}};
+const scanState={lastRun:null,lastError:null,lastAttempt:null,lastOutcome:'waiting',successfulScans:0,failedScans:0,candidates:[],running:false,history:[],confirmed:[],priorCandidates:[],alerts:[],rejections:{},tickerDiagnostics:[],shadowCoverage:[],reversalObservations:[],paperEntryMetrics:{lastCheck:null,confirmed:0,accepted:0,rejected:0,blocked:[],journalReady:false,reasons:{}}};
 function easternNow(){const parts=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',weekday:'short',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date());const x=Object.fromEntries(parts.map(p=>[p.type,p.value]));return {weekday:x.weekday,minutes:Number(x.hour)*60+Number(x.minute)}}
 async function backgroundScan(){
  if(scanState.running)return;
@@ -61,6 +61,26 @@ async function backgroundScan(){
   rejections['Not optionable']=Math.max(0,(active.stocks||[]).length-symbols.length);
   rejections['Quote or momentum filter']=Math.max(0,symbols.length-rankedStocks.length);
   rejections['Queued for rotating evaluation']=Math.max(0,rankedStocks.length-stocks.length);
+  // Independent, observation-only reversal screen. Never feeds automatic paper entries.
+  const reversalObservations=await Promise.all(stocks.map(async stock=>{
+   try{
+    const q=new URL('/bars',base);q.searchParams.set('symbol',stock.symbol);q.searchParams.set('range','1D');
+    const data=await upstream(q.pathname+q.search);
+    const bars=(data.bars||[]).filter(b=>Number.isFinite(b.h)&&Number.isFinite(b.l)&&Number.isFinite(b.c)&&Number.isFinite(Date.parse(b.t)));
+    if(bars.length<9)return {symbol:stock.symbol,status:'insufficient-bars',eligible:false};
+    const last=bars.at(-1),prior=bars.slice(-9,-1);
+    const age=Date.now()-Date.parse(last.t);
+    if(age< -5000||age>180000)return {symbol:stock.symbol,status:'stale-bars',eligible:false};
+    const high=Math.max(...prior.map(b=>b.h)),low=Math.min(...prior.map(b=>b.l));
+    const avg=prior.reduce((sum,b)=>sum+(Number(b.v)||0),0)/prior.length;
+    const ratio=avg>0?(Number(last.v)||0)/avg:0;
+    const side=stock.changePercent<=-0.75?'call':stock.changePercent>=0.75?'put':null;
+    const reclaim=side==='call'?last.c>high:side==='put'?last.c<low:false;
+    const eligible=Boolean(side&&reclaim&&ratio>=1.2);
+    return {symbol:stock.symbol,side,eligible,status:eligible?'reversal-watch':!reclaim?'range-not-reclaimed':'volume-unconfirmed',volumeRatio:Number(ratio.toFixed(2)),barTime:last.t,checkedAt,observationOnly:true};
+   }catch{return {symbol:stock.symbol,status:'upstream-error',eligible:false}}
+  }));
+  scanState.reversalObservations=reversalObservations;
   const results=await Promise.all(stocks.map(async stock=>{
    try{
     const e=new URL('/expirations',base);e.searchParams.set('symbol',stock.symbol);
@@ -134,7 +154,7 @@ async function backgroundScan(){
   scanState.alerts=scanState.alerts.slice(0,40);
   scanState.lastRun=checkedAt;scanState.lastError=null;scanState.lastOutcome='completed';scanState.successfulScans++;
   const tiers=Object.fromEntries(['High Conviction','Actionable','Watchlist','Developing'].map(t=>[t,scanState.candidates.filter(c=>c.setup?.tier===t).length]));
-  const diagnostic={checkedAt,candidates:scanState.candidates.length,confirmed:scanState.confirmed.length,tiers,rejections,tickerDiagnostics:scanState.tickerDiagnostics,shadowCoverage:scanState.shadowCoverage,discovery:{symbolsRequested:symbols.length,qualified:rankedStocks.length,evaluated:stocks.length,queued:Math.max(0,rankedStocks.length-stocks.length),windowIndex,windowCount},paperEntryMetrics:scanState.paperEntryMetrics};
+  const diagnostic={checkedAt,candidates:scanState.candidates.length,confirmed:scanState.confirmed.length,tiers,rejections,tickerDiagnostics:scanState.tickerDiagnostics,shadowCoverage:scanState.shadowCoverage,discovery:{symbolsRequested:symbols.length,qualified:rankedStocks.length,evaluated:stocks.length,queued:Math.max(0,rankedStocks.length-stocks.length),windowIndex,windowCount},paperEntryMetrics:scanState.paperEntryMetrics,reversalObservations:scanState.reversalObservations};
   scanState.history.unshift(diagnostic);scanState.history=scanState.history.slice(0,100);
   if(journalReady)try{await saveScannerDiagnostic(diagnostic)}catch(e){console.error('Scanner history persistence failed:',e.message)}
  }catch(e){scanState.lastError=e.message;scanState.lastOutcome='failed';scanState.failedScans++;console.error('Options Lab background scan failed:',e.message)}
