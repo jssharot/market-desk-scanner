@@ -27,7 +27,7 @@ function paperRiskStatus(trades,now=new Date()){
  return {limits:riskLimits,open,realizedPnl,lossStreak,blocked,dayET:today,hypothetical:true};
 }
 let discoveryWindow=0;
-const scanState={lastRun:null,lastError:null,lastAttempt:null,lastOutcome:'waiting',successfulScans:0,failedScans:0,candidates:[],running:false,history:[],confirmed:[],priorCandidates:[],alerts:[],rejections:{},tickerDiagnostics:[],shadowCoverage:[]};
+const scanState={lastRun:null,lastError:null,lastAttempt:null,lastOutcome:'waiting',successfulScans:0,failedScans:0,candidates:[],running:false,history:[],confirmed:[],priorCandidates:[],alerts:[],rejections:{},tickerDiagnostics:[],shadowCoverage:[],paperEntryMetrics:{lastCheck:null,confirmed:0,accepted:0,rejected:0,blocked:[],journalReady:false,reasons:{}}};
 function easternNow(){const parts=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',weekday:'short',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date());const x=Object.fromEntries(parts.map(p=>[p.type,p.value]));return {weekday:x.weekday,minutes:Number(x.hour)*60+Number(x.minute)}}
 async function backgroundScan(){
  if(scanState.running)return;
@@ -106,18 +106,22 @@ async function backgroundScan(){
     const existingIds=new Set(existing.map(t=>t.id));
     const risk=paperRiskStatus(existing);
     const entries=[];
+    const entryReasons={};
+    let rejected=0;
     for(const c of scanState.confirmed){
      if(risk.blocked.length||risk.open+entries.length>=riskLimits.maxOpenPositions)break;
      const entry=paperEntryCandidate(c,existingIds,checkedAt);
-     if(!entry)continue;
+     if(!entry){rejected++;entryReasons['Duplicate, quote quality, tier or premium requirement']=(entryReasons['Duplicate, quote quality, tier or premium requirement']||0)+1;continue;}
      entries.push(entry);
      const id=entry.id;
      existingIds.add(id);
      if(entries.length>=riskLimits.maxOpenPositions)break;
     }
     if(entries.length)await mergeJournal(entries);
+    scanState.paperEntryMetrics={lastCheck:checkedAt,confirmed:scanState.confirmed.length,accepted:entries.length,rejected,blocked:risk.blocked,journalReady:true,reasons:entryReasons};
    }catch(e){console.error('Paper auto-entry failed:',e.message)}
   }
+  if(!journalReady)scanState.paperEntryMetrics={lastCheck:checkedAt,confirmed:scanState.confirmed.length,accepted:0,rejected:0,blocked:['Paper journal unavailable'],journalReady:false,reasons:{}};
   scanState.candidates=current.sort((a,b)=>b.setup.score-a.setup.score);scanState.priorCandidates=current;
   scanState.tickerDiagnostics=[...tickerReasons].map(([symbol,reason])=>({symbol,reason})).sort((a,b)=>a.symbol.localeCompare(b.symbol));
   scanState.shadowCoverage=rankedStocks.filter(q=>!stocks.some(x=>x.symbol===q.symbol)).map(q=>({symbol:q.symbol,changePercent:q.changePercent,reason:'Queued for rotating evaluation'}));
@@ -130,7 +134,7 @@ async function backgroundScan(){
   scanState.alerts=scanState.alerts.slice(0,40);
   scanState.lastRun=checkedAt;scanState.lastError=null;scanState.lastOutcome='completed';scanState.successfulScans++;
   const tiers=Object.fromEntries(['High Conviction','Actionable','Watchlist','Developing'].map(t=>[t,scanState.candidates.filter(c=>c.setup?.tier===t).length]));
-  const diagnostic={checkedAt,candidates:scanState.candidates.length,confirmed:scanState.confirmed.length,tiers,rejections,tickerDiagnostics:scanState.tickerDiagnostics,shadowCoverage:scanState.shadowCoverage,discovery:{symbolsRequested:symbols.length,qualified:rankedStocks.length,evaluated:stocks.length,queued:Math.max(0,rankedStocks.length-stocks.length),windowIndex,windowCount}};
+  const diagnostic={checkedAt,candidates:scanState.candidates.length,confirmed:scanState.confirmed.length,tiers,rejections,tickerDiagnostics:scanState.tickerDiagnostics,shadowCoverage:scanState.shadowCoverage,discovery:{symbolsRequested:symbols.length,qualified:rankedStocks.length,evaluated:stocks.length,queued:Math.max(0,rankedStocks.length-stocks.length),windowIndex,windowCount},paperEntryMetrics:scanState.paperEntryMetrics};
   scanState.history.unshift(diagnostic);scanState.history=scanState.history.slice(0,100);
   if(journalReady)try{await saveScannerDiagnostic(diagnostic)}catch(e){console.error('Scanner history persistence failed:',e.message)}
  }catch(e){scanState.lastError=e.message;scanState.lastOutcome='failed';scanState.failedScans++;console.error('Options Lab background scan failed:',e.message)}
