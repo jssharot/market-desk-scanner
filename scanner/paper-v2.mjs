@@ -1,6 +1,6 @@
 // Independent paper-v2 paper fills, no brokerage orders.
 import {freshQuote,eastern} from './engine.mjs';
-export const V2_RULES=Object.freeze({version:'paper-v2-shadow',maxPremiumDollars:1000,maxRiskDollars:75,maxSpread:0.025,minVolumeRatio:2,minDelta:0.45,maxDelta:0.60,minDTE:10,maxDTE:21,minimumTargetToRisk:1.8,stopLossFraction:0.12,profitTargetFraction:0.24,maxCorrelatedPositions:1,feePerContract:0.65,slippage:0.01});
+export const V2_RULES=Object.freeze({version:'paper-v2-shadow',maxPremiumDollars:10000,maxRiskDollars:1201.30,maxSpread:0.025,minVolumeRatio:2,minDelta:0.45,maxDelta:0.60,minDTE:10,maxDTE:21,minimumTargetToRisk:1.8,stopLossFraction:0.12,profitTargetFraction:0.24,maxCorrelatedPositions:1,feePerContract:0.65,slippage:0.01});
 export function assessV2(signal,contract,{existing=[],eventRisk=false}={}){
  const reasons=[];
  if(!signal||!contract)return {qualified:false,reasons:['missing-signal-or-contract'],version:V2_RULES.version};

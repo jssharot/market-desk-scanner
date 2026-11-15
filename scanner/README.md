@@ -26,3 +26,7 @@ Buy simulation: ask + $0.01. Sell simulation: bid − $0.01, floored at zero. Fe
 Requires Node 22 or newer. No third-party runtime dependencies. Run `node --test scanner/engine.test.mjs`, then `node scanner/service.mjs`. Public `/health` reveals only process health; every other service route requires a 32+ character shared secret. Keep a single instance attached to its disk. SIGTERM stops new scans and saves in-flight work. Startup refuses corrupt state instead of discarding the journal.
 
 No credentials or paid services have been activated as part of preparing this code. End-to-end live-data, remote hosting, and device notification verification remain required.
+
+## Paper premium limits (November 14, 2026)
+
+Both paper strategies support a $10,000 premium ceiling per position, before commissions. V1's saved setting is `paperPremiumBudget: 10000` through authenticated POST `/settings`; its value is persisted and existing smaller settings remain valid. The V1 default and daily-loss rule are unchanged. V2 allows $10,000 including its simulated entry slippage, with a $1,201.30 estimated stop-risk ceiling (12% plus round-trip fees for one contract). Stops are triggers, not guaranteed loss limits. Both strategies continue selecting a single contract; they do not automatically spend the full allowance. Existing journals and trades are preserved.
