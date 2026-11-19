@@ -1,5 +1,6 @@
 import {createServer} from 'node:http';
 import {directMarket} from './alpaca-direct.mjs';
+import {handleOAuth,oauthTokenValid} from './mcp-oauth.mjs';
 import {readFile} from 'node:fs/promises';
 import {screenContract,scoreContract,scoreSetup} from './risk.mjs';
 import {initJournal,listJournal,mergeJournal,deleteJournal,closePaperTrade,saveScannerDiagnostic,listScannerDiagnostics,recordPaperQuote,paperQuoteCoverage,paperQuoteQuality,replayObservedQuotes} from './paper-journal.mjs';
@@ -193,6 +194,7 @@ async function monitorPaperExits(){
 setInterval(()=>{void monitorPaperExits()},60000).unref();
 setTimeout(()=>{void monitorPaperExits()},5000);
 createServer(async(req,res)=>{const u=new URL(req.url,'http://localhost');
+if(u.pathname.startsWith('/oauth/')||u.pathname==='/auth/google/callback'||u.pathname.startsWith('/.well-known/oauth-')){const handled=await handleOAuth(req,res,u);if(handled!==false)return}
 if(u.pathname==='/health')return send(res,200,{ok:true,configured:!!process.env.ALPACA_API_KEY&&!!process.env.ALPACA_SECRET_KEY&&!!access});
 if(req.method==='GET'&&['/','/index.html','/app.js'].includes(u.pathname)){res.writeHead(200,{'content-type':u.pathname==='/app.js'?'text/javascript':'text/html','cache-control':'no-store'});return res.end(await readFile(new URL(u.pathname==='/app.js'?'./app.js':'./index.html',import.meta.url)))}
 if(u.pathname==='/mcp'){
@@ -200,7 +202,7 @@ if(u.pathname==='/mcp'){
   const expected=process.env.OPTIONS_LAB_READONLY_TOKEN||'';
   const supplied=(req.headers.authorization||'').replace(/^Bearer /,'');
   const a=Buffer.from(supplied),b=Buffer.from(expected);
-  if(!expected||a.length!==b.length||!timingSafeEqual(a,b))return send(res,401,{error:'Unauthorized'});
+  if(!oauthTokenValid(req.headers.authorization)&&(!expected||a.length!==b.length||!timingSafeEqual(a,b))){res.setHeader('WWW-Authenticate','Bearer resource_metadata="https://options-lab-beta.onrender.com/.well-known/oauth-protected-resource/mcp"');return send(res,401,{error:'Unauthorized'})}
   if(req.method==='GET')return send(res,405,{error:'SSE not supported; use Streamable HTTP POST'});
   if(req.method!=='POST')return send(res,405,{error:'POST required'});
   let raw='';
