@@ -195,6 +195,48 @@ setTimeout(()=>{void monitorPaperExits()},5000);
 createServer(async(req,res)=>{const u=new URL(req.url,'http://localhost');
 if(u.pathname==='/health')return send(res,200,{ok:true,configured:!!process.env.ALPACA_API_KEY&&!!process.env.ALPACA_SECRET_KEY&&!!access});
 if(req.method==='GET'&&['/','/index.html','/app.js'].includes(u.pathname)){res.writeHead(200,{'content-type':u.pathname==='/app.js'?'text/javascript':'text/html','cache-control':'no-store'});return res.end(await readFile(new URL(u.pathname==='/app.js'?'./app.js':'./index.html',import.meta.url)))}
+if(u.pathname==='/mcp'){
+  const {timingSafeEqual}=await import('node:crypto');
+  const expected=process.env.OPTIONS_LAB_READONLY_TOKEN||'';
+  const supplied=(req.headers.authorization||'').replace(/^Bearer /,'');
+  const a=Buffer.from(supplied),b=Buffer.from(expected);
+  if(!expected||a.length!==b.length||!timingSafeEqual(a,b))return send(res,401,{error:'Unauthorized'});
+  if(req.method==='GET')return send(res,405,{error:'SSE not supported; use Streamable HTTP POST'});
+  if(req.method!=='POST')return send(res,405,{error:'POST required'});
+  let raw='';
+  for await(const part of req){raw+=part;if(raw.length>65536)return send(res,413,{error:'Request too large'})}
+  let rpc;
+  try{rpc=JSON.parse(raw)}catch{return send(res,400,{error:'Invalid JSON'})}
+  const ok=(result)=>send(res,200,{jsonrpc:'2.0',id:rpc.id,result});
+  const fail=(code,message)=>send(res,200,{jsonrpc:'2.0',id:rpc.id,error:{code,message}});
+  if(rpc.method==='notifications/initialized')return send(res,202,{});
+  if(rpc.method==='initialize')return ok({protocolVersion:'2025-03-26',capabilities:{tools:{listChanged:false}},serverInfo:{name:'options-lab-readonly',version:'1.0.0'}});
+  const defs=[
+    {name:'stock_quote',description:'Get Alpaca stock quote, price and quote timestamps for one ticker.',inputSchema:{type:'object',properties:{symbol:{type:'string',description:'Uppercase ticker e.g. SPY'}},required:['symbol'],additionalProperties:false}},
+    {name:'option_expirations',description:'Get available option expiration dates for a ticker.',inputSchema:{type:'object',properties:{symbol:{type:'string'}},required:['symbol'],additionalProperties:false}},
+    {name:'option_chain',description:'Get Alpaca option contracts with bid/ask, strikes, Greeks and quote times for ticker, expiry and call or put.',inputSchema:{type:'object',properties:{symbol:{type:'string'},expiry:{type:'string',description:'YYYY-MM-DD'},side:{type:'string',enum:['call','put']}},required:['symbol','expiry','side'],additionalProperties:false}}
+  ];
+  if(rpc.method==='tools/list')return ok({tools:defs});
+  if(rpc.method!=='tools/call')return fail(-32601,'Method not found');
+  try{
+    const name=rpc.params?.name,args=rpc.params?.arguments||{},sym=symbol(args.symbol);
+    let result;
+    if(name==='stock_quote'){
+      const j=await upstream('/quotes?symbols='+encodeURIComponent(sym));
+      result={quote:(j.quotes||[])[0]||null,checkedAt:j.checkedAt||null,source:j.source||'Alpaca SIP'};
+    }else if(name==='option_expirations'){
+      result=await upstream('/expirations?symbol='+encodeURIComponent(sym));
+    }else if(name==='option_chain'){
+      const date=expiry(args.expiry),side=args.side;
+      if(!['call','put'].includes(side))throw Error('Invalid side');
+      const q=new URL('/chain',base);
+      for(const [k,v] of Object.entries({symbol:sym,expiry:date,side}))q.searchParams.set(k,v);
+      const j=await upstream(q.pathname+q.search);
+      result={...j,screened:(j.contracts||[]).map(c=>({...c,screen:screenContract({...c,expiry:date})}))};
+    }else return fail(-32602,'Unknown tool');
+    return ok({content:[{type:'text',text:JSON.stringify(result)}]});
+  }catch(e){return ok({content:[{type:'text',text:'Market data request failed: '+e.message}],isError:true})}
+}
 if(u.pathname.startsWith('/chatgpt/v1/')){
   const {timingSafeEqual}=await import('node:crypto');
   const expected=process.env.OPTIONS_LAB_READONLY_TOKEN||'';
