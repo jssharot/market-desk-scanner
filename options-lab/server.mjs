@@ -1,4 +1,5 @@
 import {createServer} from 'node:http';
+import {directMarket} from './alpaca-direct.mjs';
 import {readFile} from 'node:fs/promises';
 import {screenContract,scoreContract,scoreSetup} from './risk.mjs';
 import {initJournal,listJournal,mergeJournal,deleteJournal,closePaperTrade,saveScannerDiagnostic,listScannerDiagnostics,recordPaperQuote,paperQuoteCoverage,paperQuoteQuality,replayObservedQuotes} from './paper-journal.mjs';
@@ -6,11 +7,9 @@ import {paperExitDecision,paperEntryCandidate} from './paper-strategy.mjs';
 import {performanceMetrics} from './performance.mjs';
 let journalReady=false;
 initJournal().then(ready=>{journalReady=ready;console.log('Paper journal database:',ready?'ready':'not configured')}).catch(error=>console.error('Paper journal initialization failed:',error.message));
-const base=process.env.MARKET_DESK_BACKEND_URL||'https://market-desk-paper-scanner.onrender.com';
-const secret=process.env.SCANNER_SHARED_SECRET;
 const access=process.env.OPTIONS_LAB_ACCESS_KEY;
 function send(res,status,data){res.writeHead(status,{'content-type':'application/json','cache-control':'no-store'});res.end(JSON.stringify(data))}
-async function upstream(path){if(!secret)throw Error('Market Desk backend not configured');const r=await fetch(new URL(path,base),{headers:{Authorization:'Bearer '+secret},signal:AbortSignal.timeout(12000)});if(!r.ok)throw Error('Market Desk backend error '+r.status);return r.json()}
+const upstream=directMarket;
 function symbol(s){if(!/^[A-Z]{1,5}$/.test(s))throw Error('Invalid symbol');return s}
 function expiry(s){if(!/^\d{4}-\d{2}-\d{2}$/.test(s))throw Error('Invalid expiry');return s}
 const riskLimits={maxOpenPositions:Math.max(1,Math.min(20,Number(process.env.PAPER_MAX_OPEN_POSITIONS)||3)),maxDailyRealizedLoss:Math.max(100,Math.min(10000,Number(process.env.PAPER_MAX_DAILY_LOSS)||500)),lossStreakCooldown:Math.max(1,Math.min(10,Number(process.env.PAPER_LOSS_STREAK)||3))};
@@ -193,7 +192,7 @@ async function monitorPaperExits(){
 setInterval(()=>{void monitorPaperExits()},60000).unref();
 setTimeout(()=>{void monitorPaperExits()},5000);
 createServer(async(req,res)=>{const u=new URL(req.url,'http://localhost');
-if(u.pathname==='/health')return send(res,200,{ok:true,configured:!!secret&&!!access});
+if(u.pathname==='/health')return send(res,200,{ok:true,configured:!!process.env.ALPACA_API_KEY&&!!process.env.ALPACA_SECRET_KEY&&!!access});
 if(req.method==='GET'&&['/','/index.html','/app.js'].includes(u.pathname)){res.writeHead(200,{'content-type':u.pathname==='/app.js'?'text/javascript':'text/html','cache-control':'no-store'});return res.end(await readFile(new URL(u.pathname==='/app.js'?'./app.js':'./index.html',import.meta.url)))}
 if(!access)return send(res,503,{error:'Access not configured'});
 if(req.headers['x-options-lab-key']!==access)return send(res,401,{error:'Unauthorized'});
@@ -279,7 +278,7 @@ if(req.method==='GET'&&u.pathname==='/api/opportunities'){
 if(req.method==='GET'&&u.pathname==='/api/market-status'){
  const j=await upstream('/state');
  const session=j.session||{};
- return send(res,200,{session,checkedAt:j.lastCheck||null,source:'Market Desk / Alpaca exchange calendar',note:'Today session is exchange-calendar based; next trading day after a closure is estimated until verified by calendar.'});
+ return send(res,200,{session,checkedAt:j.lastCheck||null,source:'Alpaca exchange calendar direct',note:'Today session is exchange-calendar based; next trading day after a closure is estimated until verified by calendar.'});
 }
 if(req.method==='GET'&&u.pathname==='/api/ticker-search'){
  const q=(u.searchParams.get('q')||'').trim().slice(0,60);
