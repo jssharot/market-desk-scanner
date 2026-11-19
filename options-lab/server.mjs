@@ -195,6 +195,34 @@ setTimeout(()=>{void monitorPaperExits()},5000);
 createServer(async(req,res)=>{const u=new URL(req.url,'http://localhost');
 if(u.pathname==='/health')return send(res,200,{ok:true,configured:!!process.env.ALPACA_API_KEY&&!!process.env.ALPACA_SECRET_KEY&&!!access});
 if(req.method==='GET'&&['/','/index.html','/app.js'].includes(u.pathname)){res.writeHead(200,{'content-type':u.pathname==='/app.js'?'text/javascript':'text/html','cache-control':'no-store'});return res.end(await readFile(new URL(u.pathname==='/app.js'?'./app.js':'./index.html',import.meta.url)))}
+if(u.pathname.startsWith('/chatgpt/v1/')){
+  const {timingSafeEqual}=await import('node:crypto');
+  const expected=process.env.OPTIONS_LAB_READONLY_TOKEN||'';
+  const supplied=(req.headers.authorization||'').replace(/^Bearer /,'');
+  const a=Buffer.from(supplied),b=Buffer.from(expected);
+  if(req.method!=='GET')return send(res,405,{error:'Read-only interface: GET required'});
+  if(!expected||a.length!==b.length||!timingSafeEqual(a,b))return send(res,401,{error:'Unauthorized'});
+  try{
+    if(u.pathname==='/chatgpt/v1/stock-quote'){
+      const sym=symbol(u.searchParams.get('symbol'));
+      const j=await upstream('/quotes?symbols='+encodeURIComponent(sym));
+      return send(res,200,{quote:(j.quotes||[])[0]||null,checkedAt:j.checkedAt||null,source:j.source||'Alpaca SIP'});
+    }
+    if(u.pathname==='/chatgpt/v1/expirations'){
+      const sym=symbol(u.searchParams.get('symbol'));
+      return send(res,200,await upstream('/expirations?symbol='+encodeURIComponent(sym)));
+    }
+    if(u.pathname==='/chatgpt/v1/chain'){
+      const sym=symbol(u.searchParams.get('symbol')),date=expiry(u.searchParams.get('expiry')),side=u.searchParams.get('side');
+      if(!['call','put'].includes(side))return send(res,400,{error:'Invalid side'});
+      const q=new URL('/chain',base);
+      for(const [k,v] of Object.entries({symbol:sym,expiry:date,side}))q.searchParams.set(k,v);
+      const j=await upstream(q.pathname+q.search);
+      return send(res,200,{...j,screened:(j.contracts||[]).map(c=>({...c,screen:screenContract({...c,expiry:date})}))});
+    }
+    return send(res,404,{error:'Not found'});
+  }catch(e){return send(res,502,{error:'Market data unavailable',detail:e.message})}
+}
 if(!access)return send(res,503,{error:'Access not configured'});
 if(req.headers['x-options-lab-key']!==access)return send(res,401,{error:'Unauthorized'});
 try{
