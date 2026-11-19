@@ -7,6 +7,7 @@ import {paperExitDecision,paperEntryCandidate} from './paper-strategy.mjs';
 import {performanceMetrics} from './performance.mjs';
 let journalReady=false;
 initJournal().then(ready=>{journalReady=ready;console.log('Paper journal database:',ready?'ready':'not configured')}).catch(error=>console.error('Paper journal initialization failed:',error.message));
+const base='http://local'; // URL construction only; all market requests go directly to Alpaca.
 const access=process.env.OPTIONS_LAB_ACCESS_KEY;
 function send(res,status,data){res.writeHead(status,{'content-type':'application/json','cache-control':'no-store'});res.end(JSON.stringify(data))}
 const upstream=directMarket;
