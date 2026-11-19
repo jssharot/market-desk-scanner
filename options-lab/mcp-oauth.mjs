@@ -1,7 +1,10 @@
-import {randomBytes,createHash,timingSafeEqual} from 'node:crypto';
+import {randomBytes,createHash,createHmac,timingSafeEqual} from 'node:crypto';
 
 const origin='https://options-lab-beta.onrender.com';
-const clients=new Map(), pending=new Map(), codes=new Map(), tokens=new Map();
+const pending=new Map(), codes=new Map(), tokens=new Map();
+const sign=x=>createHmac('sha256',process.env.GOOGLE_OAUTH_CLIENT_SECRET||'').update(x).digest('base64url');
+const registerClient=uris=>{const payload=Buffer.from(JSON.stringify({uris})).toString('base64url');return payload+'.'+sign(payload)};
+const getClient=id=>{try{const [payload,signature,...rest]=id.split('.');if(rest.length||!payload||!signature||!process.env.GOOGLE_OAUTH_CLIENT_SECRET)return null;const a=Buffer.from(signature),b=Buffer.from(sign(payload));if(a.length!==b.length||!timingSafeEqual(a,b))return null;return JSON.parse(Buffer.from(payload,'base64url').toString())}catch{return null}};
 const random=()=>randomBytes(32).toString('base64url');
 const digest=x=>createHash('sha256').update(x).digest('base64url');
 const reply=(res,status,obj,headers={})=>{res.writeHead(status,{'content-type':'application/json','cache-control':'no-store',...headers});res.end(JSON.stringify(obj))};
@@ -23,14 +26,15 @@ export async function handleOAuth(req,res,u){
   let raw='';for await(const p of req){raw+=p;if(raw.length>8192)return reply(res,413,{error:'request_too_large'})}
   let data;try{data=JSON.parse(raw)}catch{return reply(res,400,{error:'invalid_client_metadata'})}
   if(!Array.isArray(data.redirect_uris)||data.redirect_uris.length<1||data.redirect_uris.length>5||!data.redirect_uris.every(validRedirect))return reply(res,400,{error:'invalid_redirect_uri'});
-  const client_id=random();clients.set(client_id,{redirect_uris:data.redirect_uris});
+  if(!googleConfigured())return reply(res,503,{error:'google_oauth_not_configured'});
+  const client_id=registerClient(data.redirect_uris);
   return reply(res,201,{client_id,redirect_uris:data.redirect_uris,token_endpoint_auth_method:'none',grant_types:['authorization_code'],response_types:['code']});
  }
  if(u.pathname==='/oauth/authorize'){
   if(req.method!=='GET')return reply(res,405,{error:'method_not_allowed'});
   if(!googleConfigured())return reply(res,503,{error:'google_oauth_not_configured'});
   const client_id=u.searchParams.get('client_id'),redirect_uri=u.searchParams.get('redirect_uri'),challenge=u.searchParams.get('code_challenge'),state=u.searchParams.get('state');
-  if(!clients.get(client_id)?.redirect_uris.includes(redirect_uri)||u.searchParams.get('response_type')!=='code'||u.searchParams.get('code_challenge_method')!=='S256'||!challenge||!state)return reply(res,400,{error:'invalid_request'});
+  if(!getClient(client_id)?.uris.includes(redirect_uri)||u.searchParams.get('response_type')!=='code'||u.searchParams.get('code_challenge_method')!=='S256'||!challenge||!state)return reply(res,400,{error:'invalid_request'});
   const nonce=random(),googleState=random();
   pending.set(googleState,{client_id,redirect_uri,challenge,state,nonce,expires:Date.now()+300000});
   const q=new URL('https://accounts.google.com/o/oauth2/v2/auth');
