@@ -1,0 +1,15 @@
+name: Option Lab OAuth QA
+on:
+  push:
+    branches: [fix/options-lab-oauth-refresh]
+  workflow_dispatch:
+jobs:
+  oauth-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install
+      - run: node --test options-lab/*.test.mjs
