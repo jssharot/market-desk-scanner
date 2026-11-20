@@ -12,4 +12,5 @@ jobs:
         with:
           node-version: '22'
       - run: npm test
+      - run: node --test options-lab/*.test.mjs
       - run: node --check scanner/service.mjs
