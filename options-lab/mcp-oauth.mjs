@@ -4,8 +4,8 @@ const origin='https://options-lab-beta.onrender.com';
 const pending=new Map(), codes=new Map();
 const ACCESS_LIFETIME=3600, REFRESH_LIFETIME=30*24*3600;
 const tokenKey=()=>process.env.OPTIONS_LAB_OAUTH_SIGNING_SECRET||process.env.GOOGLE_OAUTH_CLIENT_SECRET||'';
-const signedToken=(kind,client_id,seconds)=>{const body=Buffer.from(JSON.stringify({kind,client_id,exp:Math.floor(Date.now()/1000)+seconds,nonce:random()})).toString('base64url');const signature=createHmac('sha256',tokenKey()).update(body).digest('base64url');return body+'.'+signature};
-const verifyToken=(token,kind)=>{try{if(!tokenKey())return null;const parts=token.split('.');if(parts.length!==2)return null;const expected=createHmac('sha256',tokenKey()).update(parts[0]).digest();const provided=Buffer.from(parts[1],'base64url');if(provided.length!==expected.length||!timingSafeEqual(provided,expected))return null;const data=JSON.parse(Buffer.from(parts[0],'base64url').toString());return data.kind===kind&&Number.isSafeInteger(data.exp)&&data.exp>Math.floor(Date.now()/1000)&&typeof data.client_id==='string'&&getClient(data.client_id)?data:null}catch{return null}};
+const signedToken=(kind,client_id,seconds,sessionEnd)=>{const body=Buffer.from(JSON.stringify({kind,client_id,exp:Math.min(Math.floor(Date.now()/1000)+seconds,sessionEnd||Number.MAX_SAFE_INTEGER),sessionEnd:sessionEnd||Math.floor(Date.now()/1000)+REFRESH_LIFETIME,nonce:random()})).toString('base64url');const signature=createHmac('sha256',tokenKey()).update(body).digest('base64url');return body+'.'+signature};
+const verifyToken=(token,kind)=>{try{if(!tokenKey())return null;const parts=token.split('.');if(parts.length!==2)return null;const expected=createHmac('sha256',tokenKey()).update(parts[0]).digest();const provided=Buffer.from(parts[1],'base64url');if(provided.length!==expected.length||!timingSafeEqual(provided,expected))return null;const data=JSON.parse(Buffer.from(parts[0],'base64url').toString());return data.kind===kind&&Number.isSafeInteger(data.exp)&&data.exp>Math.floor(Date.now()/1000)&&Number.isSafeInteger(data.sessionEnd)&&data.sessionEnd>Math.floor(Date.now()/1000)&&typeof data.client_id==='string'&&getClient(data.client_id)?data:null}catch{return null}};
 const sign=x=>createHmac('sha256',process.env.GOOGLE_OAUTH_CLIENT_SECRET||'').update(x).digest('base64url');
 const registerClient=uris=>{const payload=Buffer.from(JSON.stringify({uris})).toString('base64url');return payload+'.'+sign(payload)};
 const getClient=id=>{try{const [payload,signature,...rest]=id.split('.');if(rest.length||!payload||!signature||!process.env.GOOGLE_OAUTH_CLIENT_SECRET)return null;const a=Buffer.from(signature),b=Buffer.from(sign(payload));if(a.length!==b.length||!timingSafeEqual(a,b))return null;return JSON.parse(Buffer.from(payload,'base64url').toString())}catch{return null}};
@@ -71,7 +71,7 @@ export async function handleOAuth(req,res,u){
    const client_id=body.get('client_id')||'';
    const record=verifyToken(body.get('refresh_token')||'','refresh');
    if(!record||record.client_id!==client_id)return reply(res,400,{error:'invalid_grant'});
-   return reply(res,200,{access_token:signedToken('access',client_id,ACCESS_LIFETIME),refresh_token:signedToken('refresh',client_id,REFRESH_LIFETIME),token_type:'Bearer',expires_in:ACCESS_LIFETIME,scope:'options.read'});
+   return reply(res,200,{access_token:signedToken('access',client_id,ACCESS_LIFETIME,record.sessionEnd),refresh_token:signedToken('refresh',client_id,REFRESH_LIFETIME,record.sessionEnd),token_type:'Bearer',expires_in:ACCESS_LIFETIME,scope:'options.read'});
   }
   const authCode=body.get('code'),record=codes.get(digest(authCode||''));
   codes.delete(digest(authCode||''));
