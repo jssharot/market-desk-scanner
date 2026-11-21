@@ -1,7 +1,11 @@
 import {randomBytes,createHash,createHmac,timingSafeEqual} from 'node:crypto';
 
 const origin='https://options-lab-beta.onrender.com';
-const pending=new Map(), codes=new Map(), tokens=new Map();
+const pending=new Map(), codes=new Map();
+const ACCESS_LIFETIME=3600, REFRESH_LIFETIME=30*24*3600;
+const tokenKey=()=>process.env.OPTIONS_LAB_OAUTH_SIGNING_SECRET||process.env.GOOGLE_OAUTH_CLIENT_SECRET||'';
+const signedToken=(kind,client_id,seconds,sessionEnd)=>{const body=Buffer.from(JSON.stringify({kind,client_id,exp:Math.min(Math.floor(Date.now()/1000)+seconds,sessionEnd||Number.MAX_SAFE_INTEGER),sessionEnd:sessionEnd||Math.floor(Date.now()/1000)+REFRESH_LIFETIME,nonce:random()})).toString('base64url');const signature=createHmac('sha256',tokenKey()).update(body).digest('base64url');return body+'.'+signature};
+const verifyToken=(token,kind)=>{try{if(!tokenKey())return null;const parts=token.split('.');if(parts.length!==2)return null;const expected=createHmac('sha256',tokenKey()).update(parts[0]).digest();const provided=Buffer.from(parts[1],'base64url');if(provided.length!==expected.length||!timingSafeEqual(provided,expected))return null;const data=JSON.parse(Buffer.from(parts[0],'base64url').toString());return data.kind===kind&&Number.isSafeInteger(data.exp)&&data.exp>Math.floor(Date.now()/1000)&&Number.isSafeInteger(data.sessionEnd)&&data.sessionEnd>Math.floor(Date.now()/1000)&&typeof data.client_id==='string'&&getClient(data.client_id)?data:null}catch{return null}};
 const sign=x=>createHmac('sha256',process.env.GOOGLE_OAUTH_CLIENT_SECRET||'').update(x).digest('base64url');
 const registerClient=uris=>{const payload=Buffer.from(JSON.stringify({uris})).toString('base64url');return payload+'.'+sign(payload)};
 const getClient=id=>{try{const [payload,signature,...rest]=id.split('.');if(rest.length||!payload||!signature||!process.env.GOOGLE_OAUTH_CLIENT_SECRET)return null;const a=Buffer.from(signature),b=Buffer.from(sign(payload));if(a.length!==b.length||!timingSafeEqual(a,b))return null;return JSON.parse(Buffer.from(payload,'base64url').toString())}catch{return null}};
@@ -10,12 +14,12 @@ const digest=x=>createHash('sha256').update(x).digest('base64url');
 const reply=(res,status,obj,headers={})=>{res.writeHead(status,{'content-type':'application/json','cache-control':'no-store',...headers});res.end(JSON.stringify(obj))};
 const redirect=(res,url)=>{res.writeHead(302,{location:url,'cache-control':'no-store'});res.end()};
 const validRedirect=url=>{try{const u=new URL(url);return u.protocol==='https:'||u.hostname==='localhost'&&u.protocol==='http:'}catch{return false}};
-const prune=()=>{for(const m of [pending,codes,tokens])for(const [k,v] of m)if(v.expires<Date.now())m.delete(k)};
+const prune=()=>{for(const m of [pending,codes])for(const [k,v] of m)if(v.expires<Date.now())m.delete(k)};
 const googleConfigured=()=>!!(process.env.GOOGLE_OAUTH_CLIENT_ID&&process.env.GOOGLE_OAUTH_CLIENT_SECRET&&process.env.OPTIONS_LAB_GOOGLE_EMAIL);
-const config={issuer:origin,authorization_endpoint:origin+'/oauth/authorize',token_endpoint:origin+'/oauth/token',registration_endpoint:origin+'/oauth/register',response_types_supported:['code'],grant_types_supported:['authorization_code'],code_challenge_methods_supported:['S256'],token_endpoint_auth_methods_supported:['none'],scopes_supported:['options.read']};
+const config={issuer:origin,authorization_endpoint:origin+'/oauth/authorize',token_endpoint:origin+'/oauth/token',registration_endpoint:origin+'/oauth/register',response_types_supported:['code'],grant_types_supported:['authorization_code','refresh_token'],code_challenge_methods_supported:['S256'],token_endpoint_auth_methods_supported:['none'],scopes_supported:['options.read']};
 export function oauthTokenValid(header){
  const value=(header||'').match(/^Bearer (.+)$/)?.[1];if(!value)return false;
- prune();const t=tokens.get(digest(value));return !!(t&&t.expires>Date.now());
+ return !!verifyToken(value,'access');
 }
 export async function handleOAuth(req,res,u){
  prune();
@@ -28,7 +32,7 @@ export async function handleOAuth(req,res,u){
   if(!Array.isArray(data.redirect_uris)||data.redirect_uris.length<1||data.redirect_uris.length>5||!data.redirect_uris.every(validRedirect))return reply(res,400,{error:'invalid_redirect_uri'});
   if(!googleConfigured())return reply(res,503,{error:'google_oauth_not_configured'});
   const client_id=registerClient(data.redirect_uris);
-  return reply(res,201,{client_id,redirect_uris:data.redirect_uris,token_endpoint_auth_method:'none',grant_types:['authorization_code'],response_types:['code']});
+  return reply(res,201,{client_id,redirect_uris:data.redirect_uris,token_endpoint_auth_method:'none',grant_types:['authorization_code','refresh_token'],response_types:['code']});
  }
  if(u.pathname==='/oauth/authorize'){
   if(req.method!=='GET')return reply(res,405,{error:'method_not_allowed'});
@@ -62,10 +66,18 @@ export async function handleOAuth(req,res,u){
  if(u.pathname==='/oauth/token'){
   if(req.method!=='POST')return reply(res,405,{error:'method_not_allowed'});
   let raw='';for await(const p of req){raw+=p;if(raw.length>8192)return reply(res,413,{error:'request_too_large'})}
-  const body=new URLSearchParams(raw),authCode=body.get('code'),record=codes.get(digest(authCode||''));codes.delete(digest(authCode||''));
+  const body=new URLSearchParams(raw);
+  if(body.get('grant_type')==='refresh_token'){
+   const client_id=body.get('client_id')||'';
+   const record=verifyToken(body.get('refresh_token')||'','refresh');
+   if(!record||record.client_id!==client_id)return reply(res,400,{error:'invalid_grant'});
+   return reply(res,200,{access_token:signedToken('access',client_id,ACCESS_LIFETIME,record.sessionEnd),refresh_token:signedToken('refresh',client_id,REFRESH_LIFETIME,record.sessionEnd),token_type:'Bearer',expires_in:ACCESS_LIFETIME,scope:'options.read'});
+  }
+  const authCode=body.get('code'),record=codes.get(digest(authCode||''));
+  codes.delete(digest(authCode||''));
   if(body.get('grant_type')!=='authorization_code'||!record||record.expires<Date.now()||body.get('client_id')!==record.client_id||body.get('redirect_uri')!==record.redirect_uri||digest(body.get('code_verifier')||'')!==record.challenge)return reply(res,400,{error:'invalid_grant'});
-  const token=random();tokens.set(digest(token),{expires:Date.now()+3600000});
-  return reply(res,200,{access_token:token,token_type:'Bearer',expires_in:3600,scope:'options.read'});
+  const client_id=record.client_id;
+  return reply(res,200,{access_token:signedToken('access',client_id,ACCESS_LIFETIME),refresh_token:signedToken('refresh',client_id,REFRESH_LIFETIME),token_type:'Bearer',expires_in:ACCESS_LIFETIME,scope:'options.read'});
  }
  return false;
 }
