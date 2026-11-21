@@ -57,6 +57,15 @@ test('OAuth authorization, refresh and token verification survive module reload'
   assert.equal(refresh.status,200);
   const second=JSON.parse(refresh.body);
   assert.ok(oauthTokenValid('Bearer '+second.access_token));
+  const otherClient=JSON.parse((await call('/oauth/register',JSON.stringify({redirect_uris:['https://other.example/callback']}))).body).client_id;
+  const wrongClient=await call('/oauth/token',new URLSearchParams({grant_type:'refresh_token',client_id:otherClient,refresh_token:first.refresh_token}).toString());
+  assert.equal(wrongClient.status,400);
+  const future=Date.now;
+  try { Date.now=()=>future()+31*24*3600*1000;
+    assert.equal(oauthTokenValid('Bearer '+second.access_token),false);
+    const expired=await call('/oauth/token',new URLSearchParams({grant_type:'refresh_token',client_id,refresh_token:second.refresh_token}).toString());
+    assert.equal(expired.status,400);
+  } finally { Date.now=future; }
   assert.equal(oauthTokenValid('Bearer '+second.refresh_token),false);
   const reloaded=await import('./mcp-oauth.mjs?restart-test='+Date.now());
   assert.ok(reloaded.oauthTokenValid('Bearer '+second.access_token));
